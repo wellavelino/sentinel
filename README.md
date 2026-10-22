@@ -8,6 +8,8 @@ A mod for [Claude Code](https://claude.com/claude-code) that keeps watch over th
 
 ![sentinel demo](docs/demo.gif)
 
+The full video at full resolution is in [docs/demo.mp4](docs/demo.mp4).
+
 ## Install
 
 In a Claude Code terminal session, type:
