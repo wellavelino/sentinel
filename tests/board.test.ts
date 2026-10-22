@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { aimed, asked, bar, cleared, compact, elapsed, EMPTY, ended, filled, hasWork, isAsk, isLive, named, nearby, progress, pulse, reconciled, share, spent, spinner, stepped, summary, sweep, tasked, tooled } from '../hooks/lib/board'
+import { aimed, asked, bar, carried, cleared, compact, elapsed, EMPTY, ended, filled, hasWork, isAsk, isLive, logged, named, nearby, noted, outcome, problems, progress, pulse, reconciled, share, spent, spinner, stepped, summary, sweep, tasked, tooled } from '../hooks/lib/board'
 
 const USAGE = { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 800 }
 
@@ -352,5 +352,62 @@ describe('summary', () => {
     const board = tooled(asked(EMPTY, 'Fix the login test'), undefined, 'TodoWrite', { todos: [{ content: 'a', status: 'completed', activeForm: 'A' }] }, {}, 0)
 
     expect(summary(board)).toBe('Panel opened: 1 of 1 tasks done · 0 subagents on the board.\n◆ Working on: Fix the login test\n  ✔ a')
+  })
+})
+
+describe('what a task heard of', () => {
+  const todos = (statuses: string[]) =>
+    statuses.map((status, index) => ({ content: `Step ${index + 1}`, status, activeForm: `Doing step ${index + 1}` }))
+
+  test('keeps a task’s calls and times across a rebuilt list, and times it at its start and end', () => {
+    let board = tooled(EMPTY, undefined, 'TodoWrite', { todos: todos(['in_progress', 'pending']) }, {}, 100)
+    board = logged(board, undefined, { at: 150, tool: 'Bash', what: 'npm test' })
+    board = noted(board, undefined, '  All green.  ')
+    board = tooled(board, undefined, 'TodoWrite', { todos: todos(['completed', 'in_progress']) }, {}, 200)
+
+    expect(board.tasks[0]).toMatchObject({ startedAt: 100, endedAt: 200, note: 'All green.', calls: [{ tool: 'Bash' }] })
+    expect(board.tasks[1]).toMatchObject({ startedAt: 200 })
+    expect(board.tasks[1]?.calls).toBeUndefined()
+  })
+
+  test('takes nothing from a task that had the same place but other words', () => {
+    const before = [{ id: '0', subject: 'Old', status: 'completed' as const, calls: [{ at: 1, tool: 'Read', what: 'a' }] }]
+
+    expect(carried(before, [{ id: '0', subject: 'New', status: 'pending' }], 5)[0]?.calls).toBeUndefined()
+  })
+
+  test('books an agent’s call on its own task, or on the main one where it keeps none', () => {
+    let board = tooled(EMPTY, undefined, 'TodoWrite', { todos: todos(['in_progress']) }, {}, 0)
+    board = logged(board, 'agent-1', { at: 1, tool: 'Read', what: 'a.ts', by: 'cleanup' })
+    board = tooled(board, 'agent-2', 'TodoWrite', { todos: todos(['in_progress']) }, {}, 2)
+    board = logged(board, 'agent-2', { at: 3, tool: 'Read', what: 'b.ts' })
+
+    expect(board.tasks[0]?.calls).toEqual([{ at: 1, tool: 'Read', what: 'a.ts', by: 'cleanup' }])
+    expect(board.agents.find(agent => agent.id === 'agent-2')?.tasks[0]?.calls).toEqual([{ at: 3, tool: 'Read', what: 'b.ts' }])
+  })
+
+  test('books nothing where no task is in progress', () => {
+    const board = tooled(EMPTY, undefined, 'TodoWrite', { todos: todos(['pending']) }, {}, 0)
+
+    expect(logged(board, undefined, { at: 1, tool: 'Read', what: 'a' })).toEqual(board)
+  })
+
+  test('counts a failure fixed when the same call later went through', () => {
+    const task = {
+      id: '0',
+      subject: 'Fix',
+      status: 'completed' as const,
+      calls: [
+        { at: 1, tool: 'Bash', what: 'npm test', error: 'FAIL' },
+        { at: 2, tool: 'Edit', what: 'a.ts' },
+        { at: 3, tool: 'Bash', what: 'make', error: 'boom' },
+        { at: 4, tool: 'Bash', what: 'npm test' },
+        { at: 5, tool: 'Write', what: 'b.ts' },
+        { at: 6, tool: 'Edit', what: 'a.ts' },
+      ],
+    }
+
+    expect(problems(task).map(problem => [problem.what, problem.isFixed])).toEqual([['npm test', true], ['make', false]])
+    expect(outcome(task)).toEqual({ files: ['a.ts', 'b.ts'], commands: 3, fixed: 1, open: 1 })
   })
 })

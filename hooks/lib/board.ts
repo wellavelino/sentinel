@@ -1,4 +1,4 @@
-import type { AgentRow, Board, Task } from '../../types'
+import type { AgentRow, Board, Call, Task } from '../../types'
 
 export const EMPTY: Board = {
   goal: null,
@@ -18,6 +18,10 @@ export const TASKS_TOOL = 'mcp__sentinel__tasks'
 const MAX_AGENTS = 24
 const MAX_TASKS = 200
 const MAX_LABEL = 120
+const MAX_CALLS = 60
+const MAX_NOTE = 600
+const MAX_ERROR_LINES = 8
+const MAX_ERROR = 600
 
 /** What one model request reports of its cost, as the API counts it. */
 export type Usage = {
@@ -268,6 +272,36 @@ export function ended(board: Board, agentId: string, status: 'done' | 'failed', 
     : board
 }
 
+/**
+ * `next`, a list just rebuilt from `before`, with what the board heard of each task kept (its
+ * calls, its note, its times) and its times set at `now`: started when first seen in progress,
+ * done when first seen completed.
+ */
+export function carried(before: readonly Task[], next: readonly Task[], now: number): Task[] {
+  return next.map(task => {
+    // A todo list numbers its tasks by place: the same place with other words is another task.
+    const old =
+      before.find(one => one.id === task.id && one.subject === task.subject) ??
+      before.find(one => one.subject === task.subject)
+    const kept: Task = {
+      startedAt: old?.startedAt,
+      endedAt: old?.endedAt,
+      calls: old?.calls,
+      note: old?.note,
+      ...task,
+    }
+
+    return {
+      ...kept,
+      startedAt: kept.startedAt ?? (task.status === 'pending' ? undefined : now),
+      endedAt: task.status === 'completed' ? (kept.endedAt ?? now) : undefined,
+    }
+  })
+}
+
+const retasked = (tasks: readonly Task[], tool: string, input: unknown, result: unknown, now: number) =>
+  carried(tasks, tasked(tasks, tool, input, result), now)
+
 /** A tool call an agent or the main thread made: its tasks when it is a task tool, an agent's count. */
 export function tooled(
   board: Board,
@@ -278,7 +312,7 @@ export function tooled(
   now: number,
 ): Board {
   if (agentId === undefined) {
-    return { ...board, tasks: tasked(board.tasks, tool, input, result) }
+    return { ...board, tasks: retasked(board.tasks, tool, input, result, now) }
   }
 
   // The task tools keep one list for the session: an agent that reads it, or updates a main task,
@@ -288,13 +322,13 @@ export function tooled(
   const isMain =
     tool === 'TaskList' ||
     (id !== '' && board.tasks.some(task => task.id === id) && row?.tasks.some(task => task.id === id) !== true)
-  const booked = isMain ? { ...board, tasks: tasked(board.tasks, tool, input, result) } : board
+  const booked = isMain ? { ...board, tasks: retasked(board.tasks, tool, input, result, now) } : board
 
   return withAgent(booked, agentId, now, agent => ({
     ...agent,
     tools: agent.tools + 1,
     last: tool.replace(/^mcp__/, '').replace(/__/g, ' '),
-    tasks: isMain ? agent.tasks : tasked(agent.tasks, tool, input, result),
+    tasks: isMain ? agent.tasks : retasked(agent.tasks, tool, input, result, now),
   }))
 }
 
@@ -438,4 +472,105 @@ export function summary(board: Board): string {
 /** Whether the band has anything to say. */
 export function hasWork(board: Board): boolean {
   return board.goal !== null || board.tasks.length > 0 || board.agents.length > 0
+}
+
+/** What a call was given, in one line: its command, file, pattern or address. */
+export function described(input: unknown): string {
+  const given = record(input)
+  const first = [given.command, given.file_path, given.notebook_path, given.pattern, given.url, given.query, given.description]
+    .map(text)
+    .find(value => value.trim() !== '')
+
+  return headline(first ?? '')
+}
+
+/** What a failed call said, cut to its first lines. */
+export function failure(said: string): string {
+  const lines = said.trim().split('\n').slice(0, MAX_ERROR_LINES).join('\n')
+
+  return lines.length > MAX_ERROR ? `${lines.slice(0, MAX_ERROR - 1)}…` : lines || 'failed'
+}
+
+/**
+ * `board` with `change` made to the task a thread has in progress: an agent's own, or where it
+ * keeps no list in progress, the main thread's, which it is likely working for.
+ */
+function onCurrent(board: Board, agentId: string | undefined, change: (task: Task) => Task): Board {
+  const apply = (tasks: readonly Task[]) => {
+    const at = tasks.findIndex(task => task.status === 'in_progress')
+
+    return at === -1 ? null : tasks.map((task, index) => (index === at ? change(task) : task))
+  }
+
+  if (agentId !== undefined) {
+    const row = board.agents.find(agent => agent.id === agentId)
+    const own = row === undefined ? null : apply(row.tasks)
+
+    if (own !== null) {
+      return { ...board, agents: board.agents.map(agent => (agent.id === agentId ? { ...agent, tasks: own } : agent)) }
+    }
+  }
+
+  const main = apply(board.tasks)
+
+  return main === null ? board : { ...board, tasks: main }
+}
+
+/** A tool call booked on the task in progress where it was made; with none in progress, nowhere. */
+export function logged(board: Board, agentId: string | undefined, call: Call): Board {
+  return onCurrent(board, agentId, task => ({ ...task, calls: [...(task.calls ?? []), call].slice(-MAX_CALLS) }))
+}
+
+/** What Claude wrote in a step, kept as the note of the task in progress. */
+export function noted(board: Board, agentId: string | undefined, said: string): Board {
+  const words = said.trim()
+
+  if (words === '') {
+    return board
+  }
+
+  return onCurrent(board, agentId, task => ({
+    ...task,
+    note: words.length > MAX_NOTE ? `${words.slice(0, MAX_NOTE - 1)}…` : words,
+  }))
+}
+
+export type Problem = Call & { isFixed: boolean }
+
+/** A task's failed calls, each fixed when a later call of the same tool on the same thing went through. */
+export function problems(task: Task): Problem[] {
+  const calls = task.calls ?? []
+
+  return calls.flatMap((call, index) =>
+    call.error === undefined
+      ? []
+      : [
+          {
+            ...call,
+            isFixed: calls
+              .slice(index + 1)
+              .some(later => later.error === undefined && later.tool === call.tool && later.what === call.what),
+          },
+        ],
+  )
+}
+
+const WRITERS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+
+/** What a task came to: the files it changed, the commands it ran, its problems fixed and open. */
+export function outcome(task: Task): { files: string[]; commands: number; fixed: number; open: number } {
+  const calls = task.calls ?? []
+  const found = problems(task)
+
+  return {
+    files: [...new Set(calls.filter(call => WRITERS.has(call.tool) && call.error === undefined).map(call => call.what))],
+    commands: calls.filter(call => call.tool === 'Bash').length,
+    fixed: found.filter(problem => problem.isFixed).length,
+    open: found.filter(problem => !problem.isFixed).length,
+  }
+}
+
+/** A tool's name as a row shows it: an MCP tool without its prefix. */
+export function toolName(tool: string): string {
+  return tool.replace(/^mcp__/, '').replace(/__/g, ' ')
 }

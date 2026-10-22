@@ -11,6 +11,31 @@ export type Task = {
   status: 'pending' | 'in_progress' | 'completed'
   /** What it reads as while in progress ("Running tests"). */
   active?: string
+  /** When it was first seen in progress and when it was done, in milliseconds of the session's clock. */
+  startedAt?: number
+  endedAt?: number
+  /** The tool calls made while it was in progress, the latest last. */
+  calls?: Call[]
+  /** The last thing Claude wrote while it was in progress. */
+  note?: string
+}
+
+/** One tool call a task made: what it acted on and, when it failed, what it said. */
+export type Call = {
+  at: number
+  tool: string
+  /** The command, file, pattern or address it was given, one line. */
+  what: string
+  /** The first lines of its error, when it failed or was refused. */
+  error?: string
+  /** The subagent that made it, when one did. */
+  by?: string
+}
+
+/** Which task the panel has open (`<thread>:<id>`, the thread `main` or an agent's id), and on which tab. */
+export type View = {
+  task: string | null
+  tab: 'details' | 'problems' | 'result'
 }
 
 /** One subagent as the progress band follows it. */
@@ -57,6 +82,7 @@ declare module 'claude-code' {
       /** The frame the panel's moving marks are drawn at; it counts on only while something moves. */
       frame: number
       isDismissed: boolean
+      view: View
     }
   }
 }

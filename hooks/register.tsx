@@ -1,21 +1,27 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgentRow, Task } from '../types'
+import type { AgentRow, Task, View } from '../types'
 import {
   aimed,
   asked,
   bar,
   cleared,
   compact,
+  described,
   elapsed,
   EMPTY,
   ended,
+  failure,
   hasWork,
   isAsk,
   isLive,
+  logged,
   named,
   nearby,
+  noted,
+  outcome,
+  problems,
   progress,
   pulse,
   reconciled,
@@ -27,6 +33,7 @@ import {
   tasked,
   TASKS_TOOL,
   tooled,
+  toolName,
 } from './lib/board'
 import type { Usage } from './lib/board'
 import { INSTRUCTION, layout, MAX_PENS, penPieces } from './lib/marks'
@@ -53,12 +60,24 @@ const TICK = 250
 const TASK_BAR = 10
 // The task rows one drawing holds: a longer list shows the stretch around the task in progress.
 const MAX_TASK_ROWS = 60
+// The calls a task's details draw at once, the latest kept.
+const MAX_CALL_ROWS = 30
+
+/** The tab a task opens on: what went wrong where something is still wrong, else what it came to. */
+function firstTab(task: Task): View['tab'] {
+  if (problems(task).some(problem => !problem.isFixed)) {
+    return 'problems'
+  }
+
+  return task.status === 'completed' ? 'result' : 'details'
+}
 
 const pens = atom({ plugin: 'sentinel', key: 'pens' } as const, [])
 const readings = atom({ plugin: 'sentinel', key: 'readings' } as const, [])
 const board = atom({ plugin: 'sentinel', key: 'board' } as const, EMPTY)
 const frame = atom({ plugin: 'sentinel', key: 'frame' } as const, 0)
 const isDismissed = atom({ plugin: 'sentinel', key: 'isDismissed' } as const, false)
+const view = atom({ plugin: 'sentinel', key: 'view' } as const, { task: null, tab: 'details' } as View)
 
 // Highlighter inks: bright enough to read as a pen, dark text on each.
 const INKS: Record<string, string> = {
@@ -492,6 +511,8 @@ export const register: Register = (on, options) => {
       if (response.usage !== null) {
         await track($, e.agentId, response.usage, isAuto)
       }
+
+      await update($, board, held => noted(held, e.agentId, response.answer))
     } catch {
       return response
     }
@@ -646,12 +667,27 @@ export const register: Register = (on, options) => {
     try {
       digest = counted(digest, tool, agentId !== undefined, isFailed ? (ran.deny ?? ran.text ?? '') : undefined)
 
-      if (agentId !== undefined || TASK_TOOLS.has(tool)) {
-        const now = await $.clock.now()
+      const now = await $.clock.now()
 
+      if (agentId !== undefined || TASK_TOOLS.has(tool)) {
         await update($, board, held =>
           tooled(held, agentId, tool, isFailed ? undefined : e, isFailed ? undefined : ran.result, now),
         )
+      }
+
+      // Every other call is booked on the task it was made for, so the task can be opened on it.
+      if (!TASK_TOOLS.has(tool)) {
+        await update($, board, held => {
+          const by = agentId === undefined ? undefined : held.agents.find(agent => agent.id === agentId)?.label || 'agent'
+
+          return logged(held, agentId, {
+            at: now,
+            tool,
+            what: described(e),
+            error: isFailed ? failure(ran.deny ?? ran.text ?? '') : undefined,
+            by,
+          })
+        })
       }
     } catch {
       // The board lags one call behind.
@@ -665,6 +701,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'progress' }, async ($, e) => {
     if (e.args.trim() === 'clear') {
       await update($, board, cleared)
+      await update($, view, (): View => ({ task: null, tab: 'details' }))
 
       return { text: 'The tasks and the subagents are forgotten.' }
     }
@@ -689,7 +726,7 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     const work = await read($, board)
     const room = Math.max(20, e.props.bodyColumns)
     const running = work.agents.filter(agent => agent.status === 'running').length
@@ -798,35 +835,239 @@ export const register: Register = (on, options) => {
         </Text>
       )
     }
-    const row = (task: Task) => (
+    const mark = (task: Task) =>
+      task.status === 'completed' ? (
+        <Text color="success">✔</Text>
+      ) : task.status === 'in_progress' ? (
+        <Text color="claude">▸</Text>
+      ) : (
+        <Text dimColor>○</Text>
+      )
+    const opener = (thread: string, task: Task) => () =>
+      update($, view, () => ({ task: `${thread}:${task.id}`, tab: firstTab(task) }))
+    // Each row opens its task; the main list's first nine answer to their number too.
+    const row = (thread: string, tasks: readonly Task[]) => (task: Task) => {
+      const place = tasks.indexOf(task)
+      const open = problems(task).filter(problem => !problem.isFixed).length
+
+      return (
         <Box flexDirection="row">
           <Box width={2} flexShrink={0}>
-            {task.status === 'completed' ? (
-              <Text color="success">✔</Text>
-            ) : task.status === 'in_progress' ? (
-              <Text color="claude">▸</Text>
-            ) : (
-              <Text dimColor>○</Text>
-            )}
+            {mark(task)}
           </Box>
           <Box flexGrow={1} flexShrink={1}>
-            <Text bold={task.status === 'in_progress'} dimColor={task.status === 'completed'} wrap="truncate-end">
-              {task.status === 'in_progress' ? task.active || task.subject : task.subject}
-            </Text>
+            <Button
+              key={`task-${thread}-${task.id}`}
+              plain
+              hotkey={thread === 'main' && place < 9 ? String(place + 1) : undefined}
+              onPress={opener(thread, task)}
+            >
+              <Text bold={task.status === 'in_progress'} dimColor={task.status === 'completed'}>
+                {task.status === 'in_progress' ? task.active || task.subject : task.subject}
+              </Text>
+              {open > 0 && <Text color="error"> ! {open}</Text>}
+            </Button>
           </Box>
           <Box marginLeft={1} flexShrink={0}>
             {track(task)}
           </Box>
         </Box>
-    )
-    const todos = (tasks: readonly Task[], room: number) => {
+      )
+    }
+    const todos = (thread: string, tasks: readonly Task[], room: number) => {
       const near = nearby(tasks, room)
 
       return [
         near.before > 0 && <Text dimColor>{`  … ${near.before} done before`}</Text>,
-        ...near.shown.map(row),
+        ...near.shown.map(row(thread, tasks)),
         near.after > 0 && <Text dimColor>{`  … ${near.after} more to do`}</Text>,
       ]
+    }
+
+    // A task opened: its calls, its problems and what it came to, one tab at a time.
+    const shown = await read($, view)
+    const threads = [
+      { id: 'main', label: 'main thread', tasks: work.tasks },
+      ...work.agents.map(agent => ({ id: agent.id, label: agent.label || 'agent', tasks: agent.tasks })),
+    ]
+    const opened = threads
+      .map(thread => ({ thread, index: thread.tasks.findIndex(task => `${thread.id}:${task.id}` === shown.task) }))
+      .find(found => found.index !== -1)
+
+    if (opened !== undefined) {
+      const { thread, index } = opened
+      const list = thread.tasks
+      const task = list[index] as Task
+      const calls = task.calls ?? []
+      const found = problems(task)
+      const open = found.filter(problem => !problem.isFixed).length
+      const came = outcome(task)
+      const start = task.startedAt ?? calls[0]?.at ?? now
+      const took = task.startedAt === undefined ? '' : elapsed((task.endedAt ?? now) - task.startedAt)
+      const since = (at: number) => {
+        const seconds = Math.max(0, Math.round((at - start) / 1000))
+
+        return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+      }
+      const step = (by: number) => {
+        const next = list[(index + by + list.length) % list.length] as Task
+
+        return () => update($, view, () => ({ task: `${thread.id}:${next.id}`, tab: firstTab(next) }))
+      }
+      const tab = (name: View['tab'], label: string, hotkey: string) => (
+        <Button
+          key={`tab-${name}`}
+          label={label}
+          hotkey={hotkey}
+          variant={shown.tab === name ? 'primary' : 'secondary'}
+          onPress={() => update($, view, held => ({ ...held, tab: name }))}
+        />
+      )
+      const status =
+        task.status === 'completed'
+          ? `done${took === '' ? '' : ` in ${took}`}`
+          : task.status === 'in_progress'
+            ? `in progress${took === '' ? '' : ` · ${took}`}`
+            : 'pending'
+      const notStarted = task.status === 'pending' && calls.length === 0
+      const drawn = calls.slice(-MAX_CALL_ROWS)
+      const details = (
+        <Box flexDirection="column">
+          {task.status === 'in_progress' && task.active !== undefined && (
+            <Text color="claude" wrap="truncate-end">
+              ▸ {task.active}
+            </Text>
+          )}
+          {calls.length > drawn.length && <Text dimColor>{`… ${calls.length - drawn.length} earlier calls`}</Text>}
+          {drawn.map(call => (
+            <Box flexDirection="row">
+              <Box width={7} flexShrink={0}>
+                <Text dimColor>{since(call.at)}</Text>
+              </Box>
+              <Box width={2} flexShrink={0}>
+                {call.error === undefined ? <Text color="success">✔</Text> : <Text color="error">✖</Text>}
+              </Box>
+              <Box width={11} flexShrink={0}>
+                <Text bold wrap="truncate-end">
+                  {toolName(call.tool)}
+                </Text>
+              </Box>
+              <Box flexGrow={1} flexShrink={1}>
+                <Text wrap="truncate-end">{call.what}</Text>
+              </Box>
+              {call.by !== undefined && (
+                <Box marginLeft={1} flexShrink={0}>
+                  <Text dimColor>{call.by}</Text>
+                </Box>
+              )}
+            </Box>
+          ))}
+          {calls.length === 0 && (
+            <Text dimColor wrap="wrap">
+              {notStarted
+                ? 'Not started yet. Its tool calls show here as they run.'
+                : 'No tool calls booked on it: it was worked on before the mod loaded, or with none.'}
+            </Text>
+          )}
+        </Box>
+      )
+      const trouble = (
+        <Box flexDirection="column">
+          {found.map(problem => (
+            <Box flexDirection="column" borderStyle="round" borderColor="error" borderDimColor={problem.isFixed} paddingX={1}>
+              <Box flexDirection="row">
+                <Box flexGrow={1} flexShrink={1}>
+                  <Text bold wrap="truncate-end">
+                    <Text color="error">✖ </Text>
+                    {toolName(problem.tool)} {problem.what}
+                  </Text>
+                </Box>
+                <Box marginLeft={1} flexShrink={0}>
+                  {problem.isFixed ? <Text color="success">fixed later</Text> : <Text color="warning">still open</Text>}
+                </Box>
+              </Box>
+              <Text dimColor>
+                at {since(problem.at)}
+                {problem.by === undefined ? '' : ` · by ${problem.by}`}
+              </Text>
+              <Text wrap="wrap">{problem.error}</Text>
+            </Box>
+          ))}
+          {found.length === 0 && (
+            <Text dimColor wrap="wrap">
+              {notStarted ? 'Not started yet.' : 'No problems: every tool call it made went through.'}
+            </Text>
+          )}
+        </Box>
+      )
+      const result = notStarted ? (
+        <Text dimColor>Not started yet.</Text>
+      ) : (
+        <Box flexDirection="column">
+          {task.status === 'completed' ? (
+            <Text color="success">
+              ✔ Done{took === '' ? '' : ` in ${took}`} · {calls.length} call{calls.length === 1 ? '' : 's'}
+            </Text>
+          ) : (
+            <Text dimColor wrap="wrap">
+              Not done yet: this is what it has come to so far.
+            </Text>
+          )}
+          {task.note !== undefined && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text dimColor>Claude said</Text>
+              <Text wrap="wrap">{task.note}</Text>
+            </Box>
+          )}
+          <Box flexDirection="column" marginTop={1}>
+            <Text dimColor>
+              {came.files.length === 0 ? 'No files changed' : `${came.files.length} file${came.files.length === 1 ? '' : 's'} changed`}
+            </Text>
+            {came.files.map(file => (
+              <Text wrap="truncate-end">  {file}</Text>
+            ))}
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor>
+              {came.commands} command{came.commands === 1 ? '' : 's'} run · {came.fixed} problem{came.fixed === 1 ? '' : 's'} fixed
+            </Text>
+            {came.open > 0 && <Text color="error"> · {came.open} still open</Text>}
+          </Box>
+        </Box>
+      )
+
+      return (
+        <Box flexDirection="column">
+          {header}
+          <Box flexDirection="row" gap={1}>
+            <Button key="back" label="← Tasks" hotkey="b" onPress={() => update($, view, held => ({ ...held, task: null }))} />
+            <Box flexGrow={1} flexShrink={1}>
+              <Text dimColor wrap="truncate-end">
+                task {index + 1} of {list.length} · {thread.label}
+              </Text>
+            </Box>
+            {list.length > 1 && <Button key="prev" label="‹" hotkey="k" onPress={step(-1)} />}
+            {list.length > 1 && <Button key="next" label="›" hotkey="j" onPress={step(1)} />}
+          </Box>
+          <Box flexDirection="row" marginTop={1}>
+            <Box width={2} flexShrink={0}>
+              {mark(task)}
+            </Box>
+            <Text bold wrap="wrap">
+              {task.subject}
+            </Text>
+          </Box>
+          <Text dimColor wrap="truncate-end">
+            {status} · {calls.length} call{calls.length === 1 ? '' : 's'}
+          </Text>
+          <Box flexDirection="row" gap={1} marginY={1}>
+            {tab('details', 'Details', 'd')}
+            {tab('problems', open > 0 ? `Problems ${open}` : found.length > 0 ? `Problems ${found.length}` : 'Problems', 'p')}
+            {tab('result', 'Result', 'r')}
+          </Box>
+          {shown.tab === 'problems' ? trouble : shown.tab === 'result' ? result : details}
+        </Box>
+      )
     }
     // The agents' lists share as many rows as the main list has to itself.
     const listing = work.agents.filter(agent => agent.tasks.length > 0).length
@@ -849,7 +1090,8 @@ export const register: Register = (on, options) => {
           </Text>
           <Text wrap="wrap">{work.goal ?? (work.ask || 'Nothing yet. Your next prompt shows here.')}</Text>
           {work.tasks.length > 0 && <Box marginTop={1}>{steps(work.tasks)}</Box>}
-          {todos(work.tasks, MAX_TASK_ROWS)}
+          {todos('main', work.tasks, MAX_TASK_ROWS)}
+          {work.tasks.length > 0 && <Text dimColor>Press a task, or its number, for its calls, problems and result.</Text>}
           {work.tasks.length === 0 && (
             <Text dimColor wrap="wrap">
               No task list yet. Claude keeps one for work with several steps, and each task shows here.
@@ -906,7 +1148,7 @@ export const register: Register = (on, options) => {
               {context(agent.context, false)}
               {use(agent.used)}
               {steps(agent.tasks)}
-              {todos(agent.tasks, agentRows)}
+              {todos(agent.id, agent.tasks, agentRows)}
             </Box>
           )
         })}

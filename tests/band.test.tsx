@@ -477,6 +477,88 @@ describe('the task list in the panel', () => {
 
 const START = { cwd: '/work', surface: 'terminal', isInteractive: true } as const
 
+describe('a task opened from the panel', () => {
+  test('shows the calls made while it ran, what failed and whether it was fixed, and what it came to', async ($, on) => {
+    // Beneath the mod a test run fails once, then goes through.
+    let runs = 0
+    on('tool.call', { tool: 'Bash' }, () => {
+      runs += 1
+
+      return runs === 1
+        ? { result: 'FAIL tests/board.test.ts', text: 'FAIL tests/board.test.ts\n  1 failed', isError: true }
+        : { result: { stdout: 'ok', stderr: '', interrupted: false }, text: 'ok' }
+    })
+    const said = world(on)
+    await $.turn.start({ text: 'Ship the parser', turnId: 'turn-1' })
+    await $.tool.call({ tool: 'TodoWrite', todos: TODOS.slice(0, 4) } as never)
+    await $.tool.call({ tool: 'Read', file_path: 'src/parser.ts' } as never)
+    await said.clock.advance(10_000)
+    await $.tool.call({ tool: 'Bash', command: 'npm test' } as never)
+    await $.tool.call({ tool: 'Edit', file_path: 'src/parser.ts', old_string: 'a', new_string: 'b' } as never)
+    await said.clock.advance(20_000)
+    await $.tool.call({ tool: 'Bash', command: 'npm test' } as never)
+
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount({ ...PANE, surface })
+      const texts = async () => (await ui.findAll({ type: 'Text' })).map(text => text.text)
+
+      expect(await texts()).toContain('Press a task, or its number, for its calls, problems and result.')
+      expect((await ui.find({ key: 'task-main-2' }))?.props.hotkey).toBe('3')
+
+      await ui.press({ key: 'task-main-2' })
+      expect(await texts()).toContain('Step 3')
+      expect(await texts()).toContain('task 3 of 4 · main thread')
+      expect((await ui.find({ key: 'tab-details' }))?.props.variant).toBe('primary')
+      expect(await texts()).toContain('src/parser.ts')
+      expect(await texts()).toContain('00:30')
+      expect((await texts()).filter(text => text === 'npm test').length).toBe(2)
+
+      await ui.press({ key: 'tab-problems' })
+      expect((await ui.find({ key: 'tab-problems' }))?.props.label).toBe('Problems 1')
+      expect(await texts()).toContain('fixed later')
+      expect(await texts()).toContain('FAIL tests/board.test.ts\n  1 failed')
+
+      await ui.press({ key: 'tab-result' })
+      expect(await texts()).toContain('Not done yet: this is what it has come to so far.')
+      expect(await texts()).toContain('1 file changed')
+
+      await ui.press({ key: 'next' })
+      expect(await texts()).toContain('Not started yet. Its tool calls show here as they run.')
+
+      await ui.press({ key: 'back' })
+      expect(await ui.find({ key: 'task-main-0' })).toBeDefined()
+      await ui.unmount()
+    }
+
+    // Done, the task keeps its calls and opens on what it came to.
+    await $.tool.call({
+      tool: 'TodoWrite',
+      todos: TODOS.slice(0, 4).map((todo, index) => (index === 2 ? { ...todo, status: 'completed' } : todo)),
+    } as never)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'task-main-2' })
+    expect((await ui.find({ key: 'tab-result' }))?.props.variant).toBe('primary')
+    expect((await ui.findAll({ type: 'Text' })).map(text => text.text)).toContain('✔ Done in 30s · 4 calls')
+    await ui.unmount()
+  })
+
+  test('opens on its problems while one is still open, and marks its row', async ($, on) => {
+    on('tool.call', { tool: 'Bash' }, () => ({ result: 'boom', text: 'boom', isError: true }))
+    world(on)
+    await $.tool.call({ tool: 'TodoWrite', todos: TODOS.slice(0, 3) } as never)
+    await $.tool.call({ tool: 'Bash', command: 'make' } as never)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    expect((await ui.findAll({ type: 'Text' })).map(text => text.text)).toContain(' ! 1')
+
+    await ui.press({ key: 'task-main-2' })
+    expect((await ui.find({ key: 'tab-problems' }))?.props.variant).toBe('primary')
+    expect((await ui.findAll({ type: 'Text' })).map(text => text.text)).toContain('still open')
+    await ui.unmount()
+  })
+})
+
 describe('the mod’s own task tool', () => {
   test('is offered, in the prompt’s tool list, where the session has no task list tool', async ($, on) => {
     const said = world(on)

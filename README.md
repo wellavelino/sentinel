@@ -11,7 +11,7 @@ A mod for [Claude Code](https://claude.com/claude-code) that keeps watch over th
 In a Claude Code terminal session, type:
 
 ```
-/plugin install sentinel --marketplace wellavelino/mystique
+/plugin install sentinel --marketplace wellavelino/sentinel
 ```
 
 Answer `y` to add the marketplace, then pick a scope (the user scope loads it in every session). It is active at once, with no restart.
@@ -64,6 +64,18 @@ Give it the keyboard with `ctrl+x tab`; `Esc` hands the keyboard back. Close it 
 | Main thread | How full its context window is, its share of what the session spent, and your rate-limit windows (`5h`, `7d`). |
 | one per subagent | Its name and type, whether it runs and for how long, its tool calls and the one running now, its context, its share of the session's use, and its own tasks, each with its bar, when it keeps a list. Its mark turns while it runs. Finished agents leave with your next prompt; what they spent stays in the session's total. |
 
+### Opening a task
+
+Press any task (or, with the panel focused, its number for the main list's first nine) to open it:
+
+| Tab | Key | What it shows |
+| --- | --- | --- |
+| Details | `d` | Every tool call made while the task was in progress, with its time from the task's start, whether it went through, and the subagent that made it. |
+| Problems | `p` | Each call that failed or was refused, with the first lines of what it said, marked `fixed later` when the same call went through afterwards, or `still open`. A row with an open problem shows `! n` in the list. |
+| Result | `r` | How long it took, the last thing Claude wrote while on it, the files it changed, and how many commands it ran and problems it fixed. |
+
+A task opens on its problems while one is still open, on its result once done, on its details otherwise. `b` goes back to the list, `k` and `j` step to the previous and next task. Calls are booked on the task in progress of the thread that made them; a subagent with no list of its own books on the main thread's. A task worked on before the mod loaded has no calls to show.
+
 What moves is redrawn four times a second, and only while the panel is on screen and something is in progress. Claude keeps a task list for work with several steps: with none, the Goal card says so.
 
 **Where the tasks come from.** Claude Code's own task tools (`TodoWrite`, or `TaskCreate` and `TaskUpdate`) where the session's model has them. Where it has none, the mod gives the model one of its own, `mcp__sentinel__tasks`, which only keeps the list for the panel and the band: about 150 tokens of tool description in the prompt, and one short tool call each time a step starts or ends. It needs no permission prompt. Set **Task list tool** to `off` in `/config` to leave it out.
@@ -96,7 +108,7 @@ The band above the prompt shows the same in one line per thread; it appears once
 ## Development
 
 ```sh
-git clone https://github.com/wellavelino/mystique sentinel
+git clone https://github.com/wellavelino/sentinel
 claude --plugin-dir ./sentinel      # loads the mod from disk and reloads it on save
 ```
 
