@@ -6,6 +6,7 @@ import {
   aimed,
   asked,
   bar,
+  changed,
   cleared,
   compact,
   described,
@@ -77,7 +78,7 @@ const readings = atom({ plugin: 'sentinel', key: 'readings' } as const, [])
 const board = atom({ plugin: 'sentinel', key: 'board' } as const, EMPTY)
 const frame = atom({ plugin: 'sentinel', key: 'frame' } as const, 0)
 const isDismissed = atom({ plugin: 'sentinel', key: 'isDismissed' } as const, false)
-const view = atom({ plugin: 'sentinel', key: 'view' } as const, { task: null, tab: 'details' } as View)
+const view = atom({ plugin: 'sentinel', key: 'view' } as const, { task: null, tab: 'details', filter: 'all' } as View)
 
 // Highlighter inks: bright enough to read as a pen, dark text on each.
 const INKS: Record<string, string> = {
@@ -470,7 +471,7 @@ export const register: Register = (on, options) => {
       if (agentId !== undefined) {
         const now = await $.clock.now()
 
-        await update($, board, held => ended(held, agentId, e.reason === 'answer' ? 'done' : 'failed', now))
+        await update($, board, held => ended(held, agentId, e.reason === 'answer' ? 'done' : 'failed', now, e.answer))
       } else if (
         hasReader &&
         e.reason === 'answer' &&
@@ -714,6 +715,7 @@ export const register: Register = (on, options) => {
             what: described(e),
             error: isFailed ? failure(ran.deny ?? ran.text ?? '') : undefined,
             by,
+            lines: isFailed ? undefined : changed(tool, e),
           })
         })
       }
@@ -729,7 +731,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'progress' }, async ($, e) => {
     if (e.args.trim() === 'clear') {
       await update($, board, cleared)
-      await update($, view, (): View => ({ task: null, tab: 'details' }))
+      await update($, view, (): View => ({ task: null, tab: 'details', filter: 'all' }))
 
       return { text: 'The tasks and the subagents are forgotten.' }
     }
