@@ -450,6 +450,13 @@ describe('what a task changed and checked', () => {
     expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cat src/discount.js; ls test* tests 2>/dev/null' }] })).toBe('')
     expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cat test/cart.test.js && git diff build/' }] })).toBe('')
     expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'ls tests && pytest -q' }] })).toBe('✓ pytest -q passed')
+    // Installing a test tool runs no check.
+    for (const what of ['npm install vitest', 'pip install pytest', 'yarn add -D jest', 'npm i -D eslint']) {
+      expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what }] })).toBe('')
+    }
+    // A failure after the check is another command's: `npm test && git push` with the push denied.
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'npm test && git push', error: 'denied' }] })).toBe('• npm test ran')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'npm test && git push' }] })).toBe('✓ npm test passed')
     // Nor is one that makes, moves or removes what a check reads.
     for (const what of ['rm -rf build', 'mkdir -p build', 'cp fixture.json tests/', 'mv a.test.js test/', 'touch test/a.js', 'test -f build/out.js']) {
       expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what }] })).toBe('')
@@ -485,6 +492,13 @@ describe('what a task spent', () => {
     const board = ended(stepped(EMPTY, 'agent-1', USAGE, 0), 'agent-1', 'done', 5, 'One bug in `/repo/src/discount.js:4`, none in /repo/src/cart.js.', '/repo')
 
     expect(board.agents[0]?.said).toBe('One bug in `src/discount.js:4`, none in src/cart.js.')
+  })
+
+  test("leaves the session's folder where it is not where a path starts", () => {
+    const at = (said: string, cwd: string) => ended(stepped(EMPTY, 'agent-1', USAGE, 0), 'agent-1', 'done', 5, said, cwd).agents[0]?.said
+
+    expect(at('Backup at /mnt/bak/home/u/repo/x.js, see "/home/u/repo/y.js".', '/home/u/repo')).toBe('Backup at /mnt/bak/home/u/repo/x.js, see "y.js".')
+    expect(at('See /etc/hosts and a/b.', '/')).toBe('See etc/hosts and a/b.')
   })
 })
 

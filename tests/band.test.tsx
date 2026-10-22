@@ -42,6 +42,7 @@ function world(
   on: On,
   reply = '{"highlights": [], "missed": ""}',
   surfaces: readonly ('terminal' | 'desktop')[] = ['terminal'],
+  folder: () => string = () => '/repo',
 ): Said & { clock: ReturnType<typeof mock.clock>; launch: (agentId: string, agent?: Partial<Agent>) => void; loseList: () => void; say: (text: string) => void } {
   const said: Said = { logs: [], opened: [], asks: [], calls: [], tools: [], registered: [] }
   const clock = mock.clock(on, { now: 1000 })
@@ -104,7 +105,7 @@ function world(
     },
   }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
-  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.cwd', () => ({ value: folder() }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('tool.register', ($, e) => {
     said.registered.push({ name: e.name, isDeferred: e.isDeferred })
@@ -751,6 +752,36 @@ describe('a task opened from the panel', () => {
     expect(ran?.props.color).toBeUndefined()
     expect(ran?.props.dimColor).toBe(true)
     expect(await texts()).not.toContain('✓ node --test passed')
+    await ui.unmount()
+  })
+
+  test("names a file the same way on every call, though the session's folder was once out of reach", async ($, on) => {
+    let edits = 0
+    on('tool.call', { tool: 'Edit' }, () => {
+      edits += 1
+
+      return edits === 1 ? { result: 'no match', text: 'String not found', isError: true } : { result: { success: true }, text: 'ok' }
+    })
+    // The folder is out of reach until the first edit has run.
+    let isReachable = false
+    world(on, undefined, undefined, () => {
+      if (!isReachable) {
+        throw new Error('no folder yet')
+      }
+
+      return '/repo'
+    })
+    await $.tool.call({ tool: 'TodoWrite', todos: TODOS.slice(0, 3) } as never)
+    await $.tool.call({ tool: 'Edit', file_path: '/repo/src/parser.ts', old_string: 'a', new_string: 'b' } as never)
+    isReachable = true
+    await $.tool.call({ tool: 'Edit', file_path: '/repo/src/parser.ts', old_string: 'a', new_string: 'b' } as never)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const texts = async () => (await ui.findAll({ type: 'Text' })).map(text => text.text)
+    await ui.press({ key: 'task-main-2' })
+    await ui.press({ key: 'tab-problems' })
+    // The retry fixed the failed edit, so nothing is left open.
+    expect(await texts()).toContain('resolved')
     await ui.unmount()
   })
 

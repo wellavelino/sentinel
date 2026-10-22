@@ -310,6 +310,8 @@ export const register: Register = (on, options) => {
   const readerModel = String(options.readerModel ?? 'haiku') || 'haiku'
   // The tool calls since the person last asked, for a reader that cannot see them.
   let digest = NO_CALLS
+  // The session's folder, asked once, so a file is named against the same root on every call.
+  let folder: Promise<string> | undefined
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -515,7 +517,7 @@ export const register: Register = (on, options) => {
     try {
       if (agentId !== undefined) {
         const now = await $.clock.now()
-        const cwd = await $.session.cwd().catch(() => '')
+        const cwd = await (folder ??= $.session.cwd().catch(() => ''))
 
         await update($, board, held => ended(held, agentId, e.reason === 'answer' ? 'done' : 'failed', now, e.answer, cwd))
       } else if (
@@ -719,7 +721,7 @@ export const register: Register = (on, options) => {
       digest = counted(digest, tool, agentId !== undefined, isFailed ? (ran.deny ?? ran.text ?? '') : undefined)
 
       const now = await $.clock.now()
-      const cwd = await $.session.cwd().catch(() => '')
+      const cwd = await (folder ??= $.session.cwd().catch(() => ''))
 
       if (agentId !== undefined || TASK_TOOLS.has(tool)) {
         await update($, board, held =>

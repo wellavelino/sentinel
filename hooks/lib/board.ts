@@ -277,7 +277,9 @@ export function stepped(board: Board, agentId: string | undefined, usage: Usage,
  * under `cwd` it names by their path from there. One never heard of leaves the board as it was.
  */
 export function ended(board: Board, agentId: string, status: 'done' | 'failed', now: number, said = '', cwd = ''): Board {
-  const line = cwd === '' ? headline(said) : headline(said).replaceAll(cwd.endsWith('/') ? cwd : `${cwd}/`, '')
+  const root = (cwd.endsWith('/') ? cwd : `${cwd}/`).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // Only where a path starts: at the start, or after a space, quote, backtick or bracket.
+  const line = cwd === '' ? headline(said) : headline(said).replace(new RegExp(`(^|[\\s'"\`(\\[])${root}`, 'g'), '$1')
 
   return board.agents.some(agent => agent.id === agentId)
     ? withAgent(board, agentId, now, agent => ({ ...agent, status, endedAt: now, said: line || agent.said }))
@@ -640,8 +642,15 @@ const CHECK = /\b(test|tests|spec|lint|check|typecheck|tsc|build|verify|vitest|j
 // Commands that only look at files, move about or handle them: `cat test/a.test.js` or `rm -rf build` runs no check.
 const LOOK = /^(ls|cat|head|tail|less|more|grep|rg|find|fd|tree|stat|file|wc|sed|awk|echo|printf|cd|pwd|git|diff|which|type|rm|mkdir|cp|mv|touch|chmod|ln|test|\[)$/
 
-// A part of a command line is a check when it names one and does more than look.
-const isCheck = (part: string) => CHECK.test(part) && !LOOK.test(part.trim().split(/\s+/)[0] ?? '')
+// Installing or removing a package runs nothing: `npm install vitest`, `pip install pytest`.
+const INSTALL = /^(install|i|add|ci|remove|rm|uninstall|un|update|upgrade|get)$/
+
+// A part of a command line is a check when it names one and does more than look or install.
+const isCheck = (part: string) => {
+  const [head = '', verb = ''] = part.trim().split(/\s+/)
+
+  return CHECK.test(part) && !LOOK.test(head) && !INSTALL.test(verb)
+}
 
 // The command line's parts, each with the operator after it: `cd x && npm test 2>&1 | tail` holds `npm test`, then `|`.
 const piecesOf = (line: string) => line.split(/\s*(&&|\|\||;|\|)\s*/)
@@ -659,7 +668,9 @@ export function checks(task: Task): string {
   const named = (pieces[at] ?? '').replace(/\s*\d*>&?\s*\S+/g, '').trim() || last.what
 
   // Only `&&` after it keeps the check's exit code as the line's; a pipe, `||` or `;` gives the line another's.
-  if (at >= 0 && pieces.slice(at + 1).some((part, i) => i % 2 === 0 && part !== '&&')) {
+  // Even after `&&` only a success is the check's: a failure may be a later command's, as a denied `git push`.
+  const after = pieces.slice(at + 1)
+  if (after.some((part, i) => i % 2 === 0 && part !== '&&') || (last.error !== undefined && after.length > 1)) {
     return `• ${named} ran`
   }
 
