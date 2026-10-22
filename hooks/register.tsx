@@ -630,7 +630,9 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" gap={1}>
-            <Text color="warning">◆</Text>
+            <Box key="band-mark" flexShrink={0}>
+              <Text color="warning">◆</Text>
+            </Box>
             {entries.length > 0 && (
               <Box flexShrink={0} gap={1}>
                 <Text bold>

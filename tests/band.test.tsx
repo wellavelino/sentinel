@@ -220,7 +220,8 @@ describe('the progress band', () => {
       expect(texts).toContain('└ next: 3. Ship')
       // The use and the session limits are the panel's, not the band's.
       expect(texts.some(text => /of use|5h/.test(text))).toBe(false)
-      // On a narrow chat the task's name gives way; its time and the problems never wrap.
+      // On a narrow chat the task's name gives way; the mark, its time and the problems never shrink.
+      expect((await ui.find({ key: 'band-mark' }))?.props.flexShrink).toBe(0)
       expect((await ui.find({ key: 'band-clock' }))?.props.flexShrink).toBe(0)
       expect((await ui.find({ key: 'band-problems' }))?.props.flexShrink).toBe(0)
       await ui.unmount()
