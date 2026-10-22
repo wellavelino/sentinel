@@ -650,12 +650,16 @@ export const register: Register = (on, options) => {
               )}
             </Box>
             {running?.task.startedAt !== undefined && (
-              <Text dimColor>{clocked(now - running.task.startedAt)}</Text>
+              <Box key="band-clock" flexShrink={0}>
+                <Text dimColor>{clocked(now - running.task.startedAt)}</Text>
+              </Box>
             )}
             {open > 0 && (
-              <Text color="error">
-                ! {open} problem{open === 1 ? '' : 's'}
-              </Text>
+              <Box key="band-problems" flexShrink={0}>
+                <Text color="error">
+                  ! {open} problem{open === 1 ? '' : 's'}
+                </Text>
+              </Box>
             )}
             {/* The context keeps to the right edge; the rest reads from the left. */}
             <Box flexGrow={1} />
