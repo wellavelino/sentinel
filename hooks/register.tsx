@@ -13,7 +13,6 @@ import {
   compact,
   counts,
   described,
-  elapsed,
   EMPTY,
   ended,
   failure,

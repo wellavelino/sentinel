@@ -58,23 +58,27 @@ It opens beside the transcript (docked in the fullscreen layout, above the promp
 
 Give it the keyboard with `ctrl+x tab`; `Esc` hands the keyboard back. Close it with its close mark or `ctrl+x x`; once you close it by hand it stays closed until you ask for it again.
 
-| Card | What it shows |
+From the top:
+
+| Part | What it shows |
 | --- | --- |
-| Goal | What you gave Claude Code's own `/goal`; without one, the prompt being worked on. Under it the task list Claude keeps (its todo and task tools): a bar of done over total, then every task with a bar of its own (of a list longer than 60, the stretch around the task in progress). A task has no percent, so a done one is a full bar, a waiting one an empty bar, and the one in progress a bar that moves. |
-| Main thread | How full its context window is, its share of what the session spent, and your rate-limit windows (`5h`, `7d`). |
-| one per subagent | Its name and type, whether it runs and for how long, its tool calls and the one running now, its context, its share of the session's use, and its own tasks, each with its bar, when it keeps a list. Its mark turns while it runs. Finished agents leave with your next prompt; what they spent stays in the session's total. |
+| Header | How many tasks are done of all of them, and the time from the first one's start to the last one's end (or now). |
+| Goal | What you gave Claude Code's own `/goal`; without one, the prompt being worked on. Under it a bar of done over total, with its percent. |
+| Threads | One row a thread: the main thread with the task it is on by its number and a meter of how full its context window is; each subagent with its mark (`◐` running, `✓` done, `✕` failed), its name, the task it is on or its last answer, and how long it ran. Finished agents leave with your next prompt. |
+| Filters | `All`, `Open`, `Problems`, `Done`, each with its count; `f` steps to the next. |
+| Tasks | Every task of every thread in one numbered list, in the order they were started: its mark, its subject, when it started (`queued` while waiting), and under it a moving bar while it runs, its thread, `! n problems` while one is open, and once done the files it changed and how its last check went. Of a list longer than 30, the stretch around the task in progress. |
 
 ### Opening a task
 
-Press any task (or, with the panel focused, its number for the main list's first nine) to open it:
+Press any task (or, with the panel focused, its number for the first nine) to open it. Above the tabs: its number in the list, its status (`Done`, `In progress · what it is doing`, `Pending · queued after task n`), its thread, when it started, how long it took, its tool calls and what it spent.
 
 | Tab | Key | What it shows |
 | --- | --- | --- |
-| Details | `d` | Every tool call made while the task was in progress, with its time from the task's start, whether it went through, and the subagent that made it. |
-| Problems | `p` | Each call that failed or was refused, with the first lines of what it said, marked `fixed later` when the same call went through afterwards, or `still open`. A row with an open problem shows `! n` in the list. |
-| Result | `r` | How long it took, the last thing Claude wrote while on it, the files it changed, and how many commands it ran and problems it fixed. |
+| Details | `d` | What it is doing now, then every tool call made while it was in progress: its time from the task's start, whether it went through, the tool and what it acted on, the lines it added and removed or the first line of its error, and the subagent that made it. |
+| Problems | `p` | One card per call that failed or was refused: what failed, `resolved` when the same call went through afterwards or `open`, where and when, and what it said. A task with an open problem shows `! n problems` in the list. |
+| Result | `r` | Once done: the last thing Claude wrote while on it, the files it changed with their lines added and removed, and how its last test or check went. |
 
-A task opens on its problems while one is still open, on its result once done, on its details otherwise. `b` goes back to the list, `k` and `j` step to the previous and next task. Calls are booked on the task in progress of the thread that made them; a subagent with no list of its own books on the main thread's. A task worked on before the mod loaded has no calls to show.
+A task opens on its problems while one is still open, on its result once done, on its details otherwise. `b` goes back to the list, `k` and `j` step to the previous and next task of the list. Calls are booked on the task in progress of the thread that made them; a subagent with no list of its own books on the main thread's. A task worked on before the mod loaded has no calls to show.
 
 What moves is redrawn four times a second, and only while the panel is on screen and something is in progress. Claude keeps a task list for work with several steps: with none, the Goal card says so.
 
@@ -99,7 +103,7 @@ The band above the prompt shows the same in one line per thread; it appears once
 ## Good to know
 
 - **Your data stays where it is.** The mod makes no network call of its own and writes no file. Marks and the board live in the session's memory and go with it. The second reader is a model call through your own Claude Code session, like any other.
-- **The figures are measurements and estimates.** Context is what each thread's last model request held; a subagent's percent is taken against the main thread's window. "Of session" is a thread's share of all the tokens the session spent since the mod loaded, weighed the way the API prices one kind against another (output five times an input token, a cache write one and a quarter, a cache read a tenth). It does not know that one model costs more than another, so read it as a share of the work, not of the bill. A goal stays on the board until you clear it with `/goal clear`.
+- **The figures are measurements and estimates.** Context is what the main thread's last model request held, against its window. What a task "spent" is the tokens its model requests used while it was in progress, weighed the way the API prices one kind against another (output five times an input token, a cache write one and a quarter, a cache read a tenth). It does not know that one model costs more than another, so read it as a measure of the work, not of the bill. A goal stays on the board until you clear it with `/goal clear`.
 - **The second reader can be wrong.** The fast one sees the reply and a count of tool calls, not their output. Read its line as a prompt to check, not as a finding. Its marks are drawn only where the reply shows the phrase word for word, as whole words, on one line.
 - **The `claude` highlighter adds one short section to the system prompt** (about 120 words) asking for `==marks==`. No other setting touches the prompt. Where nothing draws the reply (`claude -p`), the section is not sent.
 - **A paragraph that holds a mark is drawn by the mod**, line by line as the reply wrote it, with its bold, italics, inline code, list markers and links (a link's address is shown beside its label); code blocks, tables and every other paragraph stay the engine's own drawing. A `==mark==` inside a table cell is drawn bold instead, and your own pens do not reach into code blocks or tables.
