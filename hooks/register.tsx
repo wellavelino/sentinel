@@ -953,7 +953,8 @@ export const register: Register = (on, options) => {
                 </Text>
               </Box>
               <Box flexGrow={1} flexShrink={1}>
-                <Text wrap="truncate-end">{call.what}</Text>
+                {/* A path keeps its file name in sight: it is cut in the middle, not at the end. */}
+                <Text wrap={call.what.startsWith('/') ? 'truncate-middle' : 'truncate-end'}>{call.what}</Text>
               </Box>
               {call.by !== undefined && (
                 <Box marginLeft={1} flexShrink={0}>
@@ -1024,7 +1025,7 @@ export const register: Register = (on, options) => {
               {came.files.length === 0 ? 'No files changed' : `${came.files.length} file${came.files.length === 1 ? '' : 's'} changed`}
             </Text>
             {came.files.map(file => (
-              <Text wrap="truncate-end">  {file}</Text>
+              <Text wrap="truncate-middle">  {file}</Text>
             ))}
           </Box>
           <Box marginTop={1}>
