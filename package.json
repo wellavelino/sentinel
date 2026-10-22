@@ -1,8 +1,8 @@
 {
-  "name": "mystique",
+  "name": "sentinel",
   "version": "0.1.0",
   "private": true,
-  "description": "A Claude Code mod: a highlighter pen for Claude's replies and a side panel for query results.",
+  "description": "A Claude Code mod: a progress panel for the goal, every task and every subagent, and a highlighter pen for Claude's replies.",
   "license": "MIT",
   "scripts": {
     "lint": "claude plugin validate .",

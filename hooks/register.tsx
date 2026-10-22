@@ -1,21 +1,27 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgentRow, DataTable, Task, View } from '../types'
+import type { AgentRow, Task, View } from '../types'
 import {
   aimed,
   asked,
   bar,
   cleared,
   compact,
+  described,
   elapsed,
   EMPTY,
   ended,
+  failure,
   hasWork,
   isAsk,
   isLive,
+  logged,
   named,
   nearby,
+  noted,
+  outcome,
+  problems,
   progress,
   pulse,
   reconciled,
@@ -27,9 +33,9 @@ import {
   tasked,
   TASKS_TOOL,
   tooled,
+  toolName,
 } from './lib/board'
 import type { Usage } from './lib/board'
-import { clip, fitColumns, isNumeric, NULL, shown } from './lib/grid'
 import { INSTRUCTION, layout, MAX_PENS, penPieces } from './lib/marks'
 import type { Line, Segment } from './lib/marks'
 import {
@@ -43,17 +49,8 @@ import {
   REVIEW_SYSTEM,
   reviewRequest,
 } from './lib/review'
-import { describeCommand, isDatabaseTool, parseTables } from './lib/tables'
-import type { ParsedTable } from './lib/tables'
 
-const PANE = 'mystique'
-const PAGE = 20
-const LEAP = 100
-// The rows drawn at once: past it the page slides, so a long result never outgrows a drawing.
-const WINDOW = 100
-const MAX_TABLES = 10
-const MAX_RECORD = 50_000
-const START: View = { tab: 'tables', tableId: null, shown: PAGE, column: 0, row: null }
+const PANE = 'sentinel'
 const MAX_READINGS = 40
 const MIN_REVIEWED_REPLY = 200
 const MAX_AGENT_ROWS = 6
@@ -63,15 +60,24 @@ const TICK = 250
 const TASK_BAR = 10
 // The task rows one drawing holds: a longer list shows the stretch around the task in progress.
 const MAX_TASK_ROWS = 60
+// The calls a task's details draw at once, the latest kept.
+const MAX_CALL_ROWS = 30
 
-const tables = atom({ plugin: 'mystique', key: 'tables' } as const, [])
-const view = atom({ plugin: 'mystique', key: 'view' } as const, START)
-const pens = atom({ plugin: 'mystique', key: 'pens' } as const, [])
-const readings = atom({ plugin: 'mystique', key: 'readings' } as const, [])
-const board = atom({ plugin: 'mystique', key: 'board' } as const, EMPTY)
-const frame = atom({ plugin: 'mystique', key: 'frame' } as const, 0)
-const isDismissed = atom({ plugin: 'mystique', key: 'isDismissed' } as const, false)
-const ROWS = { plugin: 'mystique', key: 'rows' } as const
+/** The tab a task opens on: what went wrong where something is still wrong, else what it came to. */
+function firstTab(task: Task): View['tab'] {
+  if (problems(task).some(problem => !problem.isFixed)) {
+    return 'problems'
+  }
+
+  return task.status === 'completed' ? 'result' : 'details'
+}
+
+const pens = atom({ plugin: 'sentinel', key: 'pens' } as const, [])
+const readings = atom({ plugin: 'sentinel', key: 'readings' } as const, [])
+const board = atom({ plugin: 'sentinel', key: 'board' } as const, EMPTY)
+const frame = atom({ plugin: 'sentinel', key: 'frame' } as const, 0)
+const isDismissed = atom({ plugin: 'sentinel', key: 'isDismissed' } as const, false)
+const view = atom({ plugin: 'sentinel', key: 'view' } as const, { task: null, tab: 'details' } as View)
 
 // Highlighter inks: bright enough to read as a pen, dark text on each.
 const INKS: Record<string, string> = {
@@ -112,8 +118,6 @@ const TASKS_SPEC = {
   isDeferred: false,
 }
 
-type Captured = { title: string; source: string; table: ParsedTable }
-
 // The next frame of the panel's moving marks, once asked for, and when.
 let pending: { timer: { cancel: () => void }; at: number } | null = null
 // Whether the task list is being read for the board: a call of the mod's own, not the assistant's.
@@ -139,83 +143,13 @@ async function refresh($: EngineInterface): Promise<void> {
   }
 }
 
-/**
- * Opens the panel on `tab`, unless the person closed it by hand. A panel already open keeps the
- * tab they are on unless `isTaking`: a result they asked for takes it, an agent starting does not.
- */
-async function reveal($: EngineInterface, tab: View['tab'], isTaking: boolean): Promise<boolean> {
+/** Opens the panel, unless the person closed it by hand. */
+async function reveal($: EngineInterface): Promise<boolean> {
   if (await read($, isDismissed)) {
     return false
   }
 
-  const isOpen = (await $.ui.panes()).some(pane => pane.id === PANE)
-
-  if (isTaking || !isOpen) {
-    await update($, view, held => ({ ...held, tab }))
-  }
-
-  return (await $.ui.open({ id: PANE, title: 'mystique', columns: 72 })).isPlaced
-}
-
-/**
- * Keeps what was captured and shows the newest when asked to, opening the panel for it where
- * the panel opens by itself (`isAuto`).
- */
-async function keep(
-  $: EngineInterface,
-  found: readonly Captured[],
-  isShown: boolean,
-  isAuto: boolean,
-): Promise<void> {
-  const stamp = await $.clock.now()
-  const entries: DataTable[] = []
-
-  for (const { title, source, table } of found) {
-    const id = `${stamp}-${entries.length}-${Math.random().toString(36).slice(2, 8)}`
-    await $.state.set({ ...ROWS, id }, table.rows)
-    entries.push({
-      id,
-      title,
-      source,
-      format: table.format,
-      columns: table.columns,
-      rowCount: table.rows.length,
-      isTruncated: table.isTruncated,
-    })
-  }
-
-  const newest = entries.at(-1)
-
-  if (newest === undefined) {
-    return
-  }
-
-  const inView = isShown ? null : (await read($, view)).tableId
-  let dropped: DataTable[] = []
-  await update($, tables, list => {
-    const all = [...list, ...entries]
-    // The oldest go first, the one on screen never.
-    dropped = all.filter(table => table.id !== inView).slice(0, Math.max(0, all.length - MAX_TABLES))
-
-    return all.filter(table => !dropped.includes(table))
-  })
-
-  for (const old of dropped) {
-    await $.state.set({ ...ROWS, id: old.id }, [])
-  }
-
-  await update($, view, held =>
-    isShown || held.tableId === null ? { ...START, tab: held.tab, tableId: newest.id } : held,
-  )
-
-  if (!isShown) {
-    return
-  }
-
-  // Closed by hand, the panel stays closed: the person hears of the table and opens it.
-  if (!isAuto || !(await reveal($, 'tables', true))) {
-    $.ui.toast(`Table captured: ${newest.title} (${newest.rowCount} rows). /tables shows it.`)
-  }
+  return (await $.ui.open({ id: PANE, title: 'progress', columns: 72 })).isPlaced
 }
 
 /** Books one answered model request on the board: its context and cost, and a new agent's name. */
@@ -251,7 +185,7 @@ async function track(
 
     // A new agent is worth showing; one already on the board is not news.
     if (isAuto) {
-      await reveal($, 'agents', false)
+      await reveal($)
     }
   }
 }
@@ -327,7 +261,6 @@ export const register: Register = (on, options) => {
   const hasReader = mode === 'reader' || mode === 'both'
   const hasBold = mode === 'bold' || mode === 'both'
   const ink = INKS[String(options.color ?? 'yellow')] ?? '#ffe95c'
-  const capture = String(options.capture ?? 'databases')
   const hasBand = String(options.band ?? 'on') !== 'off'
   const isAuto = String(options.panel ?? 'auto') !== 'manual'
   const hasTasks = String(options.tasks ?? 'auto') !== 'off'
@@ -337,11 +270,6 @@ export const register: Register = (on, options) => {
   let digest = NO_CALLS
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({
-      name: 'tables',
-      description: 'Open the data panel with the tables mystique captured (clear: forget them)',
-      argumentHint: '[clear]',
-    })
     await $.command.register({
       name: 'progress',
       description: 'Open the panel on the goal, the tasks and every subagent (clear: forget the tasks and agents)',
@@ -416,7 +344,7 @@ export const register: Register = (on, options) => {
     return {
       sections: [
         ...composed.sections,
-        { id: 'mystique:highlight', text: INSTRUCTION, scope: 'session' },
+        { id: 'sentinel:highlight', text: INSTRUCTION, scope: 'session' },
       ],
     }
   })
@@ -583,6 +511,8 @@ export const register: Register = (on, options) => {
       if (response.usage !== null) {
         await track($, e.agentId, response.usage, isAuto)
       }
+
+      await update($, board, held => noted(held, e.agentId, response.answer))
     } catch {
       return response
     }
@@ -720,7 +650,7 @@ export const register: Register = (on, options) => {
     })
   }
 
-  // The data panel ------------------------------------------------------------------------
+  // The board's tool calls ---------------------------------------------------------------
 
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
@@ -737,134 +667,54 @@ export const register: Register = (on, options) => {
     try {
       digest = counted(digest, tool, agentId !== undefined, isFailed ? (ran.deny ?? ran.text ?? '') : undefined)
 
-      if (agentId !== undefined || TASK_TOOLS.has(tool)) {
-        const now = await $.clock.now()
+      const now = await $.clock.now()
 
+      if (agentId !== undefined || TASK_TOOLS.has(tool)) {
         await update($, board, held =>
           tooled(held, agentId, tool, isFailed ? undefined : e, isFailed ? undefined : ran.result, now),
         )
+      }
+
+      // Every other call is booked on the task it was made for, so the task can be opened on it.
+      if (!TASK_TOOLS.has(tool)) {
+        await update($, board, held => {
+          const by = agentId === undefined ? undefined : held.agents.find(agent => agent.id === agentId)?.label || 'agent'
+
+          return logged(held, agentId, {
+            at: now,
+            tool,
+            what: described(e),
+            error: isFailed ? failure(ran.deny ?? ran.text ?? '') : undefined,
+            by,
+          })
+        })
       }
     } catch {
       // The board lags one call behind.
     }
 
-    if (capture === 'off' || isFailed) {
-      return ran
-    }
-
-    try {
-      const isAll = capture === 'everything'
-      const record: unknown = ran.result
-      const stdout =
-        typeof record === 'object' && record !== null && 'stdout' in record ? record.stdout : undefined
-      const text = typeof stdout === 'string' && stdout.trim() !== '' ? stdout : (ran.text ?? '')
-
-      if (tool === 'Bash') {
-        const command = 'command' in e && typeof e.command === 'string' ? e.command : ''
-        const said = describeCommand(command)
-        const isOpen = said.isDatabase || isAll
-        const found = parseTables(text, {
-          isJson: isOpen,
-          isDelimited: said.isDatabase,
-          isCsv: said.isDatabase && said.isCsv,
-          hasHeader: said.hasHeader,
-          // Any command may print a database client's table; the looser shapes need a client.
-          only: isOpen ? undefined : ['psql', 'psql-expanded', 'box'],
-        })
-
-        await keep(
-          $,
-          found.map(table => ({ title: said.title, source: said.client || 'shell', table })),
-          true,
-          isAuto,
-        )
-      } else if (tool.startsWith('mcp__') && !tool.startsWith('mcp__mystique__') && (isAll || isDatabaseTool(tool))) {
-        const [, server = '', name = ''] = tool.split('__')
-        const found = parseTables(text, { isJson: true, isDelimited: false, isCsv: false, hasHeader: true })
-
-        await keep(
-          $,
-          found.map(table => ({ title: name || server, source: server, table })),
-          true,
-          isAuto,
-        )
-      }
-    } catch {
-      return ran
-    }
-
     return ran
   })
 
-  on('session.append', { door: 'response' }, async ($, e, next) => {
-    const kept = await next(e)
-
-    if (capture === 'off' || e.agentId !== undefined) {
-      return kept
-    }
-
-    try {
-      const found: Captured[] = []
-
-      for (const block of e.message.content) {
-        if (block.type === 'text' && typeof block.text === 'string' && block.text.includes('|')) {
-          for (const table of parseTables(block.text, {
-            isJson: false,
-            isDelimited: false,
-            isCsv: false,
-            hasHeader: true,
-            only: ['markdown'],
-          })) {
-            found.push({ title: "Claude's reply", source: 'reply', table })
-          }
-        }
-      }
-
-      // A reply's table joins the list without taking the panel from a query's result.
-      await keep($, found, false, isAuto)
-    } catch {
-      return kept
-    }
-
-    return kept
-  })
-
-  on('command.run', { command: 'tables' }, async ($, e) => {
-    if (e.args.trim() === 'clear') {
-      const list = await read($, tables)
-      await update($, tables, () => [])
-      await update($, view, () => START)
-
-      for (const table of list) {
-        await $.state.set({ ...ROWS, id: table.id }, [])
-      }
-
-      return { text: 'The captured tables are forgotten.' }
-    }
-
-    await update($, isDismissed, () => false)
-    await reveal($, 'tables', true)
-    const count = (await read($, tables)).length
-
-    return { text: count === 0 ? 'Panel opened. No table captured yet.' : `Panel opened: ${count} table${count === 1 ? '' : 's'}.` }
-  })
+  // The panel -----------------------------------------------------------------------------
 
   on('command.run', { command: 'progress' }, async ($, e) => {
     if (e.args.trim() === 'clear') {
       await update($, board, cleared)
+      await update($, view, (): View => ({ task: null, tab: 'details' }))
 
       return { text: 'The tasks and the subagents are forgotten.' }
     }
 
     await update($, isDismissed, () => false)
     await refresh($)
-    await reveal($, 'agents', true)
+    await reveal($)
 
     return { text: summary(await read($, board)) }
   })
 
   on('ui.close', { id: PANE }, async ($, e, next) => {
-    // Closed by hand, it stays closed until /tables or /progress asks for it again.
+    // Closed by hand, it stays closed until /progress asks for it again.
     if (e.origin.kind === 'person') {
       await update($, isDismissed, () => true)
     }
@@ -877,453 +727,432 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const list = await read($, tables)
-    const held = await read($, view)
     const work = await read($, board)
     const room = Math.max(20, e.props.bodyColumns)
-    const tab = held.tab === 'agents' ? 'agents' : 'tables'
-    const set = (change: (held: View) => View) => () => update($, view, change)
     const running = work.agents.filter(agent => agent.status === 'running').length
-    const rule = (
-      <Text dimColor wrap="truncate-end">
-        {'─'.repeat(room)}
-      </Text>
-    )
     const header = (
       <Box flexDirection="column" marginBottom={1}>
         <Box gap={1}>
-          <Button
-            key="tab-tables"
-            label={`Tables ${list.length}`}
-            hotkey="t"
-            variant={tab === 'tables' ? 'primary' : 'secondary'}
-            onPress={set(now => ({ ...now, tab: 'tables' }))}
-          />
-          <Button
-            key="tab-agents"
-            label={`Agents ${work.agents.length}`}
-            hotkey="g"
-            variant={tab === 'agents' ? 'primary' : 'secondary'}
-            onPress={set(now => ({ ...now, tab: 'agents' }))}
-          />
+          <Text color="claude" bold>
+            ◆ sentinel
+          </Text>
           {running > 0 && <Text color="claude">● {running} running</Text>}
         </Box>
-        {rule}
-      </Box>
-    )
-
-    if (tab === 'agents') {
-      const now = await $.clock.now()
-      const isMoving = isLive(work)
-      const at = isMoving ? await read($, frame) : 0
-
-      // What moves is drawn again a frame later: the write draws the panel, which asks for the
-      // next, so the frames stop by themselves when the panel goes or the work is done. A frame
-      // asked for long ago never came, and is asked for again.
-      if (isMoving && (pending === null || now - pending.at > 8 * TICK)) {
-        pending?.timer.cancel()
-
-        const timer = $.clock.after(TICK, () => {
-          if (pending?.timer === timer) {
-            pending = null
-          }
-
-          update($, frame, count => count + 1).catch(() => undefined)
-        })
-
-        pending = { timer, at: now }
-      }
-
-      const span = Math.max(8, Math.min(24, room - 36))
-      const heat = (percent: number) => (percent >= 90 ? 'error' : percent >= 70 ? 'warning' : 'success')
-      const stat = (name: string, fraction: number | null, color: string, text: string, hasEdge = false) => {
-        const drawn = bar(fraction ?? 0, span)
-        // The cell a bar grows into next swells and fades while the work on it goes on.
-        const edge = hasEdge && drawn.rest !== '' ? pulse(at) : ''
-
-        return (
-          <Box flexDirection="row">
-            <Box width={9} flexShrink={0}>
-              <Text dimColor>{name}</Text>
-            </Box>
-            {fraction !== null && (
-              <Box marginRight={1} flexShrink={0}>
-                <Text color={color}>{drawn.full}</Text>
-                {edge !== '' && <Text color={color}>{edge}</Text>}
-                <Text dimColor>{edge === '' ? drawn.rest : drawn.rest.slice(1)}</Text>
-              </Box>
-            )}
-            <Box flexShrink={1}>
-              <Text wrap="truncate-end">{text}</Text>
-            </Box>
-          </Box>
-        )
-      }
-      const context = (tokens: number, isWhole: boolean) => {
-        if (tokens <= 0) {
-          return null
-        }
-
-        const percent = work.window > 0 ? Math.round((tokens / work.window) * 100) : null
-        const size = isWhole && work.window > 0 ? `${compact(tokens)} of ${compact(work.window)}` : compact(tokens)
-
-        return percent === null
-          ? stat('context', null, 'success', size)
-          : stat('context', percent / 100, heat(percent), `${percent}%  ${size}`)
-      }
-      const use = (used: number) => {
-        const percent = share(work, used)
-
-        return stat('use', percent / 100, 'claude', `${percent}% of session`)
-      }
-      const steps = (tasks: readonly Task[]) => {
-        const { done, total } = progress(tasks)
-
-        return (
-          total > 0 &&
-          stat('tasks', done / total, 'success', `${done}/${total}`, tasks.some(task => task.status === 'in_progress'))
-        )
-      }
-      // A task has no measure of its own: done is a full bar, in progress a moving one.
-      const track = (task: Task) => {
-        if (task.status !== 'in_progress') {
-          return task.status === 'completed' ? (
-            <Text color="success">{'━'.repeat(TASK_BAR)}</Text>
-          ) : (
-            <Text dimColor>{'─'.repeat(TASK_BAR)}</Text>
-          )
-        }
-
-        const moving = sweep(TASK_BAR, at)
-
-        return (
-          <Text>
-            <Text dimColor>{moving.before}</Text>
-            <Text color="claude">{moving.lit}</Text>
-            <Text dimColor>{moving.after}</Text>
-          </Text>
-        )
-      }
-      const row = (task: Task) => (
-          <Box flexDirection="row">
-            <Box width={2} flexShrink={0}>
-              {task.status === 'completed' ? (
-                <Text color="success">✔</Text>
-              ) : task.status === 'in_progress' ? (
-                <Text color="claude">▸</Text>
-              ) : (
-                <Text dimColor>○</Text>
-              )}
-            </Box>
-            <Box flexGrow={1} flexShrink={1}>
-              <Text bold={task.status === 'in_progress'} dimColor={task.status === 'completed'} wrap="truncate-end">
-                {task.status === 'in_progress' ? task.active || task.subject : task.subject}
-              </Text>
-            </Box>
-            <Box marginLeft={1} flexShrink={0}>
-              {track(task)}
-            </Box>
-          </Box>
-      )
-      const todos = (tasks: readonly Task[], room: number) => {
-        const near = nearby(tasks, room)
-
-        return [
-          near.before > 0 && <Text dimColor>{`  … ${near.before} done before`}</Text>,
-          ...near.shown.map(row),
-          near.after > 0 && <Text dimColor>{`  … ${near.after} more to do`}</Text>,
-        ]
-      }
-      // The agents' lists share as many rows as the main list has to itself.
-      const listing = work.agents.filter(agent => agent.tasks.length > 0).length
-      const agentRows = Math.max(3, Math.floor(MAX_TASK_ROWS / Math.max(1, listing)))
-      const limits = work.limits
-        .filter(limit => limit.kind === 'five_hour' || limit.kind === 'seven_day')
-        .map(limit => `${limit.kind === 'five_hour' ? '5h' : '7d'} ${Math.round(limit.percent)}%`)
-        .join(' · ')
-      // Those still running first, the newest of each kind on top.
-      const agents = [...work.agents].reverse().sort(
-        (one, other) => Number(other.status === 'running') - Number(one.status === 'running'),
-      )
-
-      return (
-        <Box flexDirection="column">
-          {header}
-          <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
-            <Text color="claude" bold>
-              ◆ {work.goal === null ? 'Working on' : 'Goal'}
-            </Text>
-            <Text wrap="wrap">{work.goal ?? (work.ask || 'Nothing yet. Your next prompt shows here.')}</Text>
-            {work.tasks.length > 0 && <Box marginTop={1}>{steps(work.tasks)}</Box>}
-            {todos(work.tasks, MAX_TASK_ROWS)}
-            {work.tasks.length === 0 && (
-              <Text dimColor wrap="wrap">
-                No task list yet. Claude keeps one for work with several steps, and each task shows here.
-              </Text>
-            )}
-          </Box>
-          <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-            <Text bold>Main thread</Text>
-            {context(work.context, true)}
-            {work.agents.length > 0 && use(work.used)}
-            {limits !== '' && stat('limits', null, 'success', limits)}
-            {work.context <= 0 && limits === '' && <Text dimColor>Figures arrive with the next model request.</Text>}
-          </Box>
-          {agents.length === 0 && (
-            <Box paddingX={1} marginTop={1}>
-              <Text dimColor wrap="wrap">
-                No subagents yet. Each one Claude starts gets a card here, with its context and its share of
-                the session's use.
-              </Text>
-            </Box>
-          )}
-          {agents.map(agent => {
-            const isRunning = agent.status === 'running'
-            const color = isRunning ? 'claude' : agent.status === 'failed' ? 'error' : 'success'
-            const began = agent.startedAt ?? now
-            const took = elapsed((agent.endedAt ?? now) - began)
-
-            return (
-              <Box flexDirection="column" borderStyle="round" borderColor={color} borderDimColor={!isRunning} paddingX={1}>
-                <Box flexDirection="row">
-                  <Box width={2} flexShrink={0}>
-                    <Text color={color}>{isRunning ? spinner(at) : agent.status === 'failed' ? '✖' : '✔'}</Text>
-                  </Box>
-                  <Box flexGrow={1} flexShrink={1}>
-                    <Text bold wrap="truncate-end">
-                      {agent.label || 'agent'}
-                    </Text>
-                  </Box>
-                  <Box marginLeft={1} flexShrink={0}>
-                    <Text color={color} dimColor={!isRunning}>
-                      {isRunning ? `running ${took}` : `${agent.status} in ${took}`}
-                    </Text>
-                  </Box>
-                </Box>
-                <Text dimColor wrap="truncate-end">
-                  {[
-                    agent.type,
-                    `${agent.tools} tool${agent.tools === 1 ? '' : 's'}`,
-                    isRunning && agent.last !== '' ? `now: ${agent.last}` : '',
-                  ]
-                    .filter(part => part !== '')
-                    .join(' · ')}
-                </Text>
-                {context(agent.context, false)}
-                {use(agent.used)}
-                {steps(agent.tasks)}
-                {todos(agent.tasks, agentRows)}
-              </Box>
-            )
-          })}
-        </Box>
-      )
-    }
-
-    const found = list.findIndex(one => one.id === held.tableId)
-    const at = found === -1 ? list.length - 1 : found
-    const table = list[at]
-    // A view of a table that is gone starts over on the one drawn in its place.
-    const seen = found === -1 ? { ...START, tab } : held
-
-    if (table === undefined) {
-      return (
-        <Box flexDirection="column">
-          {header}
-          <Text bold>No tables yet</Text>
-          <Text dimColor wrap="wrap">
-            Run a query with psql, mysql, sqlite3, duckdb or a database MCP tool and its result shows
-            here, 20 rows at a time.
-          </Text>
-        </Box>
-      )
-    }
-
-    const { value: rows = [] } = await $.state.get({ ...ROWS, id: table.id })
-    const turn = (step: number) =>
-      set(now => ({ ...START, tab: now.tab, tableId: list[(at + step + list.length) % list.length]?.id ?? null }))
-    const title = (
-      <Box flexDirection="column">
-        <Box flexDirection="row">
-          <Box flexGrow={1} flexShrink={1}>
-            <Text bold color="claude" wrap="truncate-end">
-              ▦ {table.title}
-            </Text>
-          </Box>
-          {list.length > 1 && (
-            <Box gap={1} marginLeft={1} flexShrink={0}>
-              <Button key="prev" label="‹" hotkey="p" onPress={turn(-1)} />
-              <Text dimColor>
-                table {at + 1} of {list.length}
-              </Text>
-              <Button key="next" label="›" hotkey="n" onPress={turn(1)} />
-            </Box>
-          )}
-        </Box>
         <Text dimColor wrap="truncate-end">
-          {table.source} · {table.rowCount} row{table.rowCount === 1 ? '' : 's'} × {table.columns.length}{' '}
-          column{table.columns.length === 1 ? '' : 's'}
-          {table.isTruncated ? ' (the first kept)' : ''}
+          {'─'.repeat(room)}
         </Text>
       </Box>
     )
 
-    if (seen.row !== null && rows[seen.row] !== undefined) {
-      const index = seen.row
-      const record = rows[index] ?? []
-      // A record is drawn whole, up to what one drawing may hold.
-      const most = Math.max(100, Math.floor(MAX_RECORD / Math.max(1, table.columns.length)))
-      const value = (cell: string) =>
-        cell.length > most ? `${cell.slice(0, most)}… (${cell.length - most} more characters)` : cell
-      const nameWidth = Math.min(
-        Math.floor(room / 3),
-        table.columns.reduce((most, name) => Math.max(most, [...name].length), 3),
-      )
-      const step = (by: number) =>
-        set(now => ({ ...now, row: Math.min(rows.length - 1, Math.max(0, index + by)) }))
+    const now = await $.clock.now()
+    const isMoving = isLive(work)
+    const at = isMoving ? await read($, frame) : 0
+
+    // What moves is drawn again a frame later: the write draws the panel, which asks for the
+    // next, so the frames stop by themselves when the panel goes or the work is done. A frame
+    // asked for long ago never came, and is asked for again.
+    if (isMoving && (pending === null || now - pending.at > 8 * TICK)) {
+      pending?.timer.cancel()
+
+      const timer = $.clock.after(TICK, () => {
+        if (pending?.timer === timer) {
+          pending = null
+        }
+
+        update($, frame, count => count + 1).catch(() => undefined)
+      })
+
+      pending = { timer, at: now }
+    }
+
+    const span = Math.max(8, Math.min(24, room - 36))
+    const heat = (percent: number) => (percent >= 90 ? 'error' : percent >= 70 ? 'warning' : 'success')
+    const stat = (name: string, fraction: number | null, color: string, text: string, hasEdge = false) => {
+      const drawn = bar(fraction ?? 0, span)
+      // The cell a bar grows into next swells and fades while the work on it goes on.
+      const edge = hasEdge && drawn.rest !== '' ? pulse(at) : ''
 
       return (
-        <Box flexDirection="column">
-          {header}
-          {title}
-          <Box gap={1} marginY={1}>
-            <Button key="back" label="Back" hotkey="b" variant="primary" onPress={set(now => ({ ...now, row: null }))} />
-            <Button key="up" label="‹" hotkey="p" onPress={step(-1)} />
-            <Text dimColor>
-              row {index + 1} of {rows.length}
-            </Text>
-            <Button key="down" label="›" hotkey="n" onPress={step(1)} />
+        <Box flexDirection="row">
+          <Box width={9} flexShrink={0}>
+            <Text dimColor>{name}</Text>
           </Box>
-          <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-            {table.columns.map((name, column) => (
-              <Box flexDirection="row">
-                <Box width={nameWidth} flexShrink={0}>
-                  <Text dimColor wrap="truncate-end">
-                    {name}
-                  </Text>
-                </Box>
-                <Box marginLeft={2} flexGrow={1} flexShrink={1}>
-                  {record[column] === null || record[column] === undefined ? (
-                    <Text dimColor>{NULL}</Text>
-                  ) : (
-                    <Text wrap="wrap">{value(record[column] ?? '')}</Text>
-                  )}
-                </Box>
-              </Box>
-            ))}
+          {fraction !== null && (
+            <Box marginRight={1} flexShrink={0}>
+              <Text color={color}>{drawn.full}</Text>
+              {edge !== '' && <Text color={color}>{edge}</Text>}
+              <Text dimColor>{edge === '' ? drawn.rest : drawn.rest.slice(1)}</Text>
+            </Box>
+          )}
+          <Box flexShrink={1}>
+            <Text wrap="truncate-end">{text}</Text>
           </Box>
         </Box>
       )
     }
+    const context = (tokens: number, isWhole: boolean) => {
+      if (tokens <= 0) {
+        return null
+      }
 
-    const count = Math.min(rows.length, Math.max(PAGE, seen.shown))
-    const first = Math.max(0, count - WINDOW)
-    const page = rows.slice(first, count)
-    const from = Math.min(Math.max(0, seen.column), table.columns.length - 1)
-    const fit = fitColumns(table.columns, page, from, room, count)
-    const columns = fit.widths.map((width, offset) => ({
-      index: from + offset,
-      width,
-      isRight: isNumeric(page, from + offset),
-    }))
-    const left = rows.length - count
-    const more = (by: number) => set(now => ({ ...now, shown: count + by }))
-    const slide = (by: number) =>
-      set(now => ({ ...now, column: Math.min(table.columns.length - 1, Math.max(0, from + by)) }))
+      const percent = work.window > 0 ? Math.round((tokens / work.window) * 100) : null
+      const size = isWhole && work.window > 0 ? `${compact(tokens)} of ${compact(work.window)}` : compact(tokens)
+
+      return percent === null
+        ? stat('context', null, 'success', size)
+        : stat('context', percent / 100, heat(percent), `${percent}%  ${size}`)
+    }
+    const use = (used: number) => {
+      const percent = share(work, used)
+
+      return stat('use', percent / 100, 'claude', `${percent}% of session`)
+    }
+    const steps = (tasks: readonly Task[]) => {
+      const { done, total } = progress(tasks)
+
+      return (
+        total > 0 &&
+        stat('tasks', done / total, 'success', `${done}/${total}`, tasks.some(task => task.status === 'in_progress'))
+      )
+    }
+    // A task has no measure of its own: done is a full bar, in progress a moving one.
+    const track = (task: Task) => {
+      if (task.status !== 'in_progress') {
+        return task.status === 'completed' ? (
+          <Text color="success">{'━'.repeat(TASK_BAR)}</Text>
+        ) : (
+          <Text dimColor>{'─'.repeat(TASK_BAR)}</Text>
+        )
+      }
+
+      const moving = sweep(TASK_BAR, at)
+
+      return (
+        <Text>
+          <Text dimColor>{moving.before}</Text>
+          <Text color="claude">{moving.lit}</Text>
+          <Text dimColor>{moving.after}</Text>
+        </Text>
+      )
+    }
+    const mark = (task: Task) =>
+      task.status === 'completed' ? (
+        <Text color="success">✔</Text>
+      ) : task.status === 'in_progress' ? (
+        <Text color="claude">▸</Text>
+      ) : (
+        <Text dimColor>○</Text>
+      )
+    const opener = (thread: string, task: Task) => () =>
+      update($, view, () => ({ task: `${thread}:${task.id}`, tab: firstTab(task) }))
+    // Each row opens its task; the main list's first nine answer to their number too.
+    const row = (thread: string, tasks: readonly Task[]) => (task: Task) => {
+      const place = tasks.indexOf(task)
+      const open = problems(task).filter(problem => !problem.isFixed).length
+
+      return (
+        <Box flexDirection="row">
+          <Box width={2} flexShrink={0}>
+            {mark(task)}
+          </Box>
+          <Box flexGrow={1} flexShrink={1}>
+            <Button
+              key={`task-${thread}-${task.id}`}
+              plain
+              hotkey={thread === 'main' && place < 9 ? String(place + 1) : undefined}
+              onPress={opener(thread, task)}
+            >
+              <Text bold={task.status === 'in_progress'} dimColor={task.status === 'completed'}>
+                {task.status === 'in_progress' ? task.active || task.subject : task.subject}
+              </Text>
+              {open > 0 && <Text color="error"> ! {open}</Text>}
+            </Button>
+          </Box>
+          <Box marginLeft={1} flexShrink={0}>
+            {track(task)}
+          </Box>
+        </Box>
+      )
+    }
+    const todos = (thread: string, tasks: readonly Task[], room: number) => {
+      const near = nearby(tasks, room)
+
+      return [
+        near.before > 0 && <Text dimColor>{`  … ${near.before} done before`}</Text>,
+        ...near.shown.map(row(thread, tasks)),
+        near.after > 0 && <Text dimColor>{`  … ${near.after} more to do`}</Text>,
+      ]
+    }
+
+    // A task opened: its calls, its problems and what it came to, one tab at a time.
+    const shown = await read($, view)
+    const threads = [
+      { id: 'main', label: 'main thread', tasks: work.tasks },
+      ...work.agents.map(agent => ({ id: agent.id, label: agent.label || 'agent', tasks: agent.tasks })),
+    ]
+    const opened = threads
+      .map(thread => ({ thread, index: thread.tasks.findIndex(task => `${thread.id}:${task.id}` === shown.task) }))
+      .find(found => found.index !== -1)
+
+    if (opened !== undefined) {
+      const { thread, index } = opened
+      const list = thread.tasks
+      const task = list[index] as Task
+      const calls = task.calls ?? []
+      const found = problems(task)
+      const open = found.filter(problem => !problem.isFixed).length
+      const came = outcome(task)
+      const start = task.startedAt ?? calls[0]?.at ?? now
+      const took = task.startedAt === undefined ? '' : elapsed((task.endedAt ?? now) - task.startedAt)
+      const since = (at: number) => {
+        const seconds = Math.max(0, Math.round((at - start) / 1000))
+
+        return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+      }
+      const step = (by: number) => {
+        const next = list[(index + by + list.length) % list.length] as Task
+
+        return () => update($, view, () => ({ task: `${thread.id}:${next.id}`, tab: firstTab(next) }))
+      }
+      const tab = (name: View['tab'], label: string, hotkey: string) => (
+        <Button
+          key={`tab-${name}`}
+          label={label}
+          hotkey={hotkey}
+          variant={shown.tab === name ? 'primary' : 'secondary'}
+          onPress={() => update($, view, held => ({ ...held, tab: name }))}
+        />
+      )
+      const status =
+        task.status === 'completed'
+          ? `done${took === '' ? '' : ` in ${took}`}`
+          : task.status === 'in_progress'
+            ? `in progress${took === '' ? '' : ` · ${took}`}`
+            : 'pending'
+      const notStarted = task.status === 'pending' && calls.length === 0
+      const drawn = calls.slice(-MAX_CALL_ROWS)
+      const details = (
+        <Box flexDirection="column">
+          {task.status === 'in_progress' && task.active !== undefined && (
+            <Text color="claude" wrap="truncate-end">
+              ▸ {task.active}
+            </Text>
+          )}
+          {calls.length > drawn.length && <Text dimColor>{`… ${calls.length - drawn.length} earlier calls`}</Text>}
+          {drawn.map(call => (
+            <Box flexDirection="row">
+              <Box width={7} flexShrink={0}>
+                <Text dimColor>{since(call.at)}</Text>
+              </Box>
+              <Box width={2} flexShrink={0}>
+                {call.error === undefined ? <Text color="success">✔</Text> : <Text color="error">✖</Text>}
+              </Box>
+              <Box width={11} flexShrink={0}>
+                <Text bold wrap="truncate-end">
+                  {toolName(call.tool)}
+                </Text>
+              </Box>
+              <Box flexGrow={1} flexShrink={1}>
+                {/* A path keeps its file name in sight: it is cut in the middle, not at the end. */}
+                <Text wrap={call.what.startsWith('/') ? 'truncate-middle' : 'truncate-end'}>{call.what}</Text>
+              </Box>
+              {call.by !== undefined && (
+                <Box marginLeft={1} flexShrink={0}>
+                  <Text dimColor>{call.by}</Text>
+                </Box>
+              )}
+            </Box>
+          ))}
+          {calls.length === 0 && (
+            <Text dimColor wrap="wrap">
+              {notStarted
+                ? 'Not started yet. Its tool calls show here as they run.'
+                : 'No tool calls booked on it: it was worked on before the mod loaded, or with none.'}
+            </Text>
+          )}
+        </Box>
+      )
+      const trouble = (
+        <Box flexDirection="column">
+          {found.map(problem => (
+            <Box flexDirection="column" borderStyle="round" borderColor="error" borderDimColor={problem.isFixed} paddingX={1}>
+              <Box flexDirection="row">
+                <Box flexGrow={1} flexShrink={1}>
+                  <Text bold wrap="truncate-end">
+                    <Text color="error">✖ </Text>
+                    {toolName(problem.tool)} {problem.what}
+                  </Text>
+                </Box>
+                <Box marginLeft={1} flexShrink={0}>
+                  {problem.isFixed ? <Text color="success">fixed later</Text> : <Text color="warning">still open</Text>}
+                </Box>
+              </Box>
+              <Text dimColor>
+                at {since(problem.at)}
+                {problem.by === undefined ? '' : ` · by ${problem.by}`}
+              </Text>
+              <Text wrap="wrap">{problem.error}</Text>
+            </Box>
+          ))}
+          {found.length === 0 && (
+            <Text dimColor wrap="wrap">
+              {notStarted ? 'Not started yet.' : 'No problems: every tool call it made went through.'}
+            </Text>
+          )}
+        </Box>
+      )
+      const result = notStarted ? (
+        <Text dimColor>Not started yet.</Text>
+      ) : (
+        <Box flexDirection="column">
+          {task.status === 'completed' ? (
+            <Text color="success">
+              ✔ Done{took === '' ? '' : ` in ${took}`} · {calls.length} call{calls.length === 1 ? '' : 's'}
+            </Text>
+          ) : (
+            <Text dimColor wrap="wrap">
+              Not done yet: this is what it has come to so far.
+            </Text>
+          )}
+          {task.note !== undefined && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text dimColor>Claude said</Text>
+              <Text wrap="wrap">{task.note}</Text>
+            </Box>
+          )}
+          <Box flexDirection="column" marginTop={1}>
+            <Text dimColor>
+              {came.files.length === 0 ? 'No files changed' : `${came.files.length} file${came.files.length === 1 ? '' : 's'} changed`}
+            </Text>
+            {came.files.map(file => (
+              <Text wrap="truncate-middle">  {file}</Text>
+            ))}
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor>
+              {came.commands} command{came.commands === 1 ? '' : 's'} run · {came.fixed} problem{came.fixed === 1 ? '' : 's'} fixed
+            </Text>
+            {came.open > 0 && <Text color="error"> · {came.open} still open</Text>}
+          </Box>
+        </Box>
+      )
+
+      return (
+        <Box flexDirection="column">
+          {header}
+          <Box flexDirection="row" gap={1}>
+            <Button key="back" label="← Tasks" hotkey="b" onPress={() => update($, view, held => ({ ...held, task: null }))} />
+            <Box flexGrow={1} flexShrink={1}>
+              <Text dimColor wrap="truncate-end">
+                task {index + 1} of {list.length} · {thread.label}
+              </Text>
+            </Box>
+            {list.length > 1 && <Button key="prev" label="‹" hotkey="k" onPress={step(-1)} />}
+            {list.length > 1 && <Button key="next" label="›" hotkey="j" onPress={step(1)} />}
+          </Box>
+          <Box flexDirection="row" marginTop={1}>
+            <Box width={2} flexShrink={0}>
+              {mark(task)}
+            </Box>
+            <Text bold wrap="wrap">
+              {task.subject}
+            </Text>
+          </Box>
+          <Text dimColor wrap="truncate-end">
+            {status} · {calls.length} call{calls.length === 1 ? '' : 's'}
+          </Text>
+          <Box flexDirection="row" gap={1} marginY={1}>
+            {tab('details', 'Details', 'd')}
+            {tab('problems', open > 0 ? `Problems ${open}` : found.length > 0 ? `Problems ${found.length}` : 'Problems', 'p')}
+            {tab('result', 'Result', 'r')}
+          </Box>
+          {shown.tab === 'problems' ? trouble : shown.tab === 'result' ? result : details}
+        </Box>
+      )
+    }
+    // The agents' lists share as many rows as the main list has to itself.
+    const listing = work.agents.filter(agent => agent.tasks.length > 0).length
+    const agentRows = Math.max(3, Math.floor(MAX_TASK_ROWS / Math.max(1, listing)))
+    const limits = work.limits
+      .filter(limit => limit.kind === 'five_hour' || limit.kind === 'seven_day')
+      .map(limit => `${limit.kind === 'five_hour' ? '5h' : '7d'} ${Math.round(limit.percent)}%`)
+      .join(' · ')
+    // Those still running first, the newest of each kind on top.
+    const agents = [...work.agents].reverse().sort(
+      (one, other) => Number(other.status === 'running') - Number(one.status === 'running'),
+    )
 
     return (
       <Box flexDirection="column">
         {header}
-        {title}
-        {(from > 0 || fit.count < table.columns.length) && (
-          <Box gap={1}>
-            <Button key="left" label="◀" hotkey="h" onPress={slide(-1)} />
-            <Text dimColor>
-              columns {from + 1}-{from + fit.count} of {table.columns.length}
+        <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
+          <Text color="claude" bold>
+            ◆ {work.goal === null ? 'Working on' : 'Goal'}
+          </Text>
+          <Text wrap="wrap">{work.goal ?? (work.ask || 'Nothing yet. Your next prompt shows here.')}</Text>
+          {work.tasks.length > 0 && <Box marginTop={1}>{steps(work.tasks)}</Box>}
+          {todos('main', work.tasks, MAX_TASK_ROWS)}
+          {work.tasks.length > 0 && <Text dimColor>Press a task, or its number, for its calls, problems and result.</Text>}
+          {work.tasks.length === 0 && (
+            <Text dimColor wrap="wrap">
+              No task list yet. Claude keeps one for work with several steps, and each task shows here.
             </Text>
-            <Button key="right" label="▶" hotkey="l" onPress={slide(1)} />
-          </Box>
-        )}
-        <Box flexDirection="row" marginTop={1}>
-          <Box width={fit.numberWidth} flexShrink={0}>
-            <Text dimColor>#</Text>
-          </Box>
-          {columns.map(column => (
-            <Box
-              width={column.width}
-              marginLeft={2}
-              flexShrink={0}
-              justifyContent={column.isRight ? 'flex-end' : 'flex-start'}
-            >
-              <Text bold wrap="truncate-end">
-                {clip(table.columns[column.index] ?? '', column.width)}
-              </Text>
-            </Box>
-          ))}
-        </Box>
-        <Box flexDirection="row">
-          <Box width={fit.numberWidth} flexShrink={0}>
-            <Text dimColor>{'─'.repeat(fit.numberWidth)}</Text>
-          </Box>
-          {columns.map(column => (
-            <Box width={column.width} marginLeft={2} flexShrink={0}>
-              <Text dimColor>{'─'.repeat(column.width)}</Text>
-            </Box>
-          ))}
-        </Box>
-        {page.map((record, offset) => (
-          <Box flexDirection="row">
-            <Box width={fit.numberWidth} flexShrink={0}>
-              <Button
-                key={`row-${first + offset}`}
-                plain
-                label={String(first + offset + 1)}
-                onPress={set(now => ({ ...now, row: first + offset }))}
-              />
-            </Box>
-            {columns.map(column => (
-              <Box
-                width={column.width}
-                marginLeft={2}
-                flexShrink={0}
-                justifyContent={column.isRight ? 'flex-end' : 'flex-start'}
-              >
-                <Text
-                  wrap="truncate-end"
-                  dimColor={record[column.index] === null || record[column.index] === undefined}
-                >
-                  {clip(shown(record[column.index]), column.width)}
-                </Text>
-              </Box>
-            ))}
-          </Box>
-        ))}
-        {rule}
-        <Box gap={1} flexWrap="wrap">
-          <Text dimColor>
-            {rows.length === 0
-              ? 'no rows'
-              : first === 0
-                ? `${count} of ${rows.length} rows`
-                : `rows ${first + 1}-${count} of ${rows.length}`}
-          </Text>
-          {left > 0 && (
-            <Button
-              key="more"
-              label={`+${Math.min(PAGE, left)} more`}
-              hotkey="m"
-              variant="primary"
-              onPress={more(PAGE)}
-            />
           )}
-          {left > PAGE && <Button key="leap" label={`+${Math.min(LEAP, left)}`} hotkey="a" onPress={more(LEAP)} />}
-          {count > PAGE && <Button key="fewer" label="first 20" hotkey="f" onPress={more(PAGE - count)} />}
         </Box>
-        {rows.length > 0 && (
-          <Text dimColor wrap="wrap">
-            Press a row number for the whole record.
-          </Text>
+        <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+          <Text bold>Main thread</Text>
+          {context(work.context, true)}
+          {work.agents.length > 0 && use(work.used)}
+          {limits !== '' && stat('limits', null, 'success', limits)}
+          {work.context <= 0 && limits === '' && <Text dimColor>Figures arrive with the next model request.</Text>}
+        </Box>
+        {agents.length === 0 && (
+          <Box paddingX={1} marginTop={1}>
+            <Text dimColor wrap="wrap">
+              No subagents yet. Each one Claude starts gets a card here, with its context and its share of
+              the session's use.
+            </Text>
+          </Box>
         )}
+        {agents.map(agent => {
+          const isRunning = agent.status === 'running'
+          const color = isRunning ? 'claude' : agent.status === 'failed' ? 'error' : 'success'
+          const began = agent.startedAt ?? now
+          const took = elapsed((agent.endedAt ?? now) - began)
+
+          return (
+            <Box flexDirection="column" borderStyle="round" borderColor={color} borderDimColor={!isRunning} paddingX={1}>
+              <Box flexDirection="row">
+                <Box width={2} flexShrink={0}>
+                  <Text color={color}>{isRunning ? spinner(at) : agent.status === 'failed' ? '✖' : '✔'}</Text>
+                </Box>
+                <Box flexGrow={1} flexShrink={1}>
+                  <Text bold wrap="truncate-end">
+                    {agent.label || 'agent'}
+                  </Text>
+                </Box>
+                <Box marginLeft={1} flexShrink={0}>
+                  <Text color={color} dimColor={!isRunning}>
+                    {isRunning ? `running ${took}` : `${agent.status} in ${took}`}
+                  </Text>
+                </Box>
+              </Box>
+              <Text dimColor wrap="truncate-end">
+                {[
+                  agent.type,
+                  `${agent.tools} tool${agent.tools === 1 ? '' : 's'}`,
+                  isRunning && agent.last !== '' ? `now: ${agent.last}` : '',
+                ]
+                  .filter(part => part !== '')
+                  .join(' · ')}
+              </Text>
+              {context(agent.context, false)}
+              {use(agent.used)}
+              {steps(agent.tasks)}
+              {todos(agent.id, agent.tasks, agentRows)}
+            </Box>
+          )
+        })}
       </Box>
     )
   })

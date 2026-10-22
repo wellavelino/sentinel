@@ -1,14 +1,14 @@
 {
-  "name": "mystique",
-  "description": "The mystique mod for Claude Code.",
+  "name": "sentinel",
+  "description": "The sentinel mod for Claude Code.",
   "owner": {
     "name": "wellavelino"
   },
   "plugins": [
     {
-      "name": "mystique",
+      "name": "sentinel",
       "source": "./",
-      "description": "A highlighter pen for Claude's replies, and a side panel for query results as tables and for the goal, the tasks and every subagent."
+      "description": "A progress panel and band for the goal, every task and every subagent, and a highlighter pen for Claude's replies."
     }
   ]
 }
