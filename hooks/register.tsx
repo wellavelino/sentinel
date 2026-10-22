@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgentRow, Task, View } from '../types'
+import type { Task, View } from '../types'
 import {
   aimed,
   asked,
@@ -627,7 +627,7 @@ export const register: Register = (on, options) => {
               </Box>
             )}
           </Box>
-          {(agents.length > 0 || upcoming !== undefined) && (
+          {e.props.maxRows >= 2 && (agents.length > 0 || upcoming !== undefined) && (
             <Box flexDirection="row" paddingLeft={2} gap={3}>
               {agents.slice(0, MAX_AGENT_ROWS).map((agent, index) => (
                 <Box flexShrink={0} gap={1}>
@@ -804,7 +804,7 @@ export const register: Register = (on, options) => {
         <Text dimColor>○</Text>
       )
     const opener = (thread: string, task: Task) => () =>
-      update($, view, () => ({ task: `${thread}:${task.id}`, tab: firstTab(task) }))
+      update($, view, held => ({ ...held, task: `${thread}:${task.id}`, tab: firstTab(task) }))
     // A task opened: its calls, its problems and what it came to, one tab at a time.
     const shown = await read($, view)
     const place = entries.findIndex(entry => `${entry.thread.id}:${entry.task.id}` === shown.task)
@@ -822,8 +822,12 @@ export const register: Register = (on, options) => {
 
         return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
       }
+      // Prev and next keep to the list it was opened from, where the task is still in it.
+      const among = filtered(entries, shown.filter ?? 'all')
+      const list = among.includes(opened) ? among : entries
       const step = (by: number) => {
-        const next = entries[(place + by + entries.length) % entries.length] as (typeof entries)[number]
+        const at = list.indexOf(opened)
+        const next = list[(at + by + list.length) % list.length] as (typeof entries)[number]
 
         return () => update($, view, held => ({ ...held, task: `${next.thread.id}:${next.task.id}`, tab: firstTab(next.task) }))
       }
@@ -975,8 +979,8 @@ export const register: Register = (on, options) => {
             <Button key="back" label="← Tasks" hotkey="b" onPress={() => update($, view, held => ({ ...held, task: null }))} />
             <Text dimColor>{`task ${opened.n} of ${entries.length}`}</Text>
             <Box flexGrow={1} />
-            {entries.length > 1 && <Button key="prev" label="‹" hotkey="k" onPress={step(-1)} />}
-            {entries.length > 1 && <Button key="next" label="›" hotkey="j" onPress={step(1)} />}
+            {list.length > 1 && <Button key="prev" label="‹" hotkey="k" onPress={step(-1)} />}
+            {list.length > 1 && <Button key="next" label="›" hotkey="j" onPress={step(1)} />}
           </Box>
           <Box flexDirection="column" marginTop={1}>
             <Text bold wrap="wrap">
@@ -1020,12 +1024,12 @@ export const register: Register = (on, options) => {
     const main = entries.find(entry => entry.thread.id === 'main' && entry.task.status === 'in_progress')
     const MARKS = { running: ['◐', 'warning'], done: ['✓', 'success'], failed: ['✕', 'error'] } as const
     // One row a thread: what it is at, and what it has spent.
-    const thread = (label: string, glyph: readonly [string, string], what: JSX.Element, used: number) => (
+    const thread = (label: string, glyph: readonly [string, string | undefined], what: JSX.Element, used: number) => (
       <Box flexDirection="row" gap={1}>
         <Box width={THREAD_NAME} flexShrink={0}>
           <Text wrap="truncate-end">{label}</Text>
         </Box>
-        <Text color={glyph[1]} dimColor={glyph[1] === 'dimColor'}>
+        <Text color={glyph[1]} dimColor={glyph[1] === undefined}>
           {glyph[0]}
         </Text>
         <Box flexGrow={1} flexShrink={1}>
@@ -1034,12 +1038,12 @@ export const register: Register = (on, options) => {
         {used > 0 && <Text dimColor>{compact(used)}</Text>}
       </Box>
     )
-    const mainMark: readonly [string, string] =
+    const mainMark: readonly [string, string | undefined] =
       main !== undefined
         ? MARKS.running
         : work.tasks.length > 0 && work.tasks.every(task => task.status === 'completed')
           ? MARKS.done
-          : ['○', 'dimColor']
+          : ['○', undefined]
     const FILTERS = [
       ['all', 'All'],
       ['open', 'Open'],

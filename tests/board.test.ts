@@ -443,6 +443,9 @@ describe('what a task changed and checked', () => {
     expect(checks(task)).toBe('✓ npm test passed')
     expect(checks({ ...task, calls: task.calls.slice(0, 2) })).toBe('✕ npm test failed')
     expect(checks({ ...task, calls: [] })).toBe('')
+    // A command that checks nothing is not a check.
+    expect(checks({ ...task, calls: [...task.calls, { at: 6, tool: 'Bash', what: 'git status' }] })).toBe('✓ npm test passed')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'git status' }] })).toBe('')
   })
 })
 

@@ -215,6 +215,14 @@ describe('the progress band', () => {
       expect(texts.some(text => /of use|5h/.test(text))).toBe(false)
       await ui.unmount()
     }
+
+    // Given one row, the band keeps to it.
+    const ui = await $.ui.mount({ ...BAND, props: { ...BAND.props, maxRows: 1 }, surface: 'terminal' })
+    const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
+
+    expect(texts).toContain('◐ 2. Writing tests')
+    expect(texts.some(text => text.includes('next:'))).toBe(false)
+    await ui.unmount()
   })
 
   test('names the work by the prompt when no goal is set, and follows created tasks', async ($, on) => {
@@ -510,6 +518,13 @@ describe('the task list in the panel', () => {
     expect((await ui.find({ key: 'filter-problems' }))?.props.variant).toBe('primary')
     expect((await ui.find({ key: 'filter-done' }))?.props.hotkey).toBe('f')
     expect(await ui.find({ key: 'task-main-2' })).toBeDefined()
+    expect(await ui.find({ key: 'task-main-0' })).toBeUndefined()
+
+    // A task opened from a filtered list steps within it, and the list comes back filtered.
+    await ui.press({ key: 'task-main-2' })
+    expect(await ui.find({ key: 'next' })).toBeUndefined()
+    await ui.press({ key: 'back' })
+    expect((await ui.find({ key: 'filter-problems' }))?.props.variant).toBe('primary')
     expect(await ui.find({ key: 'task-main-0' })).toBeUndefined()
 
     await ui.press({ key: 'filter-done' })

@@ -616,9 +616,12 @@ export function outcome(task: Task): { files: FileChange[]; commands: number; fi
   }
 }
 
-/** How the last command a task ran went: `✓ npm test passed`, or nothing where it ran none. */
+/** A command that tests, lints, typechecks or builds, as against one that only looks around. */
+const CHECK = /\b(test|tests|spec|lint|check|typecheck|tsc|build|verify|vitest|jest|pytest|eslint|biome|ruff|mypy|clippy)\b/
+
+/** How the last check a task ran went: `✓ npm test passed`, or nothing where it ran none. */
 export function checks(task: Task): string {
-  const last = (task.calls ?? []).findLast(call => call.tool === 'Bash')
+  const last = (task.calls ?? []).findLast(call => call.tool === 'Bash' && CHECK.test(call.what))
 
   return last === undefined ? '' : last.error === undefined ? `✓ ${last.what} passed` : `✕ ${last.what} failed`
 }
