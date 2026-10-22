@@ -62,7 +62,7 @@
     "band": {
       "type": "string",
       "title": "Progress band",
-      "description": "The band above the prompt: the goal, a task progress bar, and for the main thread and each subagent its context and its share of what the session spent.",
+      "description": "The band above the prompt: the task count and progress bar, the task in progress and its time, open problems and the main thread's context, with each subagent on the line under it.",
       "options": [
         "on",
         "off"
@@ -82,7 +82,7 @@
     "breakdown": {
       "type": "string",
       "title": "Break work into tasks",
-      "description": "on: a short section of the system prompt asks Claude, and each subagent that has a task list tool, to write a task list before work of three or more steps and keep it as it goes, so the panel and the band show the work even when you did not ask for a list. off: Claude keeps a list only when it decides to.",
+      "description": "on: a short section of the system prompt asks Claude, and the end of each subagent's task asks the subagent, to write a task list before work of three or more steps and keep it as it goes, so the panel and the band show the work even when you did not ask for a list. off: Claude keeps a list only when it decides to.",
       "options": [
         "on",
         "off"

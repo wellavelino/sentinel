@@ -635,8 +635,8 @@ export function fit(text: string, width: number): string {
 const CHECK = /\b(test|tests|spec|lint|check|typecheck|tsc|build|verify|vitest|jest|pytest|eslint|biome|ruff|mypy|clippy)\b/
 
 /** How the last check a task ran went: `✓ npm test passed`, or nothing where it ran none. */
-// Commands that only look at files or move about: `cat test/a.test.js` or `ls tests` names tests and runs none.
-const LOOK = /^(ls|cat|head|tail|less|more|grep|rg|find|fd|tree|stat|file|wc|sed|awk|echo|printf|cd|pwd|git|diff|which|type)$/
+// Commands that only look at files, move about or handle them: `cat test/a.test.js` or `rm -rf build` runs no check.
+const LOOK = /^(ls|cat|head|tail|less|more|grep|rg|find|fd|tree|stat|file|wc|sed|awk|echo|printf|cd|pwd|git|diff|which|type|rm|mkdir|cp|mv|touch|chmod|ln|test|\[)$/
 
 // A part of a command line is a check when it names one and does more than look.
 const isCheck = (part: string) => CHECK.test(part) && !LOOK.test(part.trim().split(/\s+/)[0] ?? '')

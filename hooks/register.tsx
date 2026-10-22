@@ -105,8 +105,9 @@ const LIST_TOOLS: [string, string, string][] = [
   [TASKS_TOOL, `${TASKS_TOOL} with every step as a task`, TASKS_TOOL],
 ]
 
-// What a subagent's task adds for the same, since its system prompt has no room for the section.
-const SUBAGENT_BREAKDOWN = `# Task list\nThe person follows your work as a task list in a progress panel. When this task needs three or more distinct steps, your first tool call is a task list with every step as a task, made with the task tool you have (${TASKS_TOOL}, TodoWrite, or TaskCreate then TaskUpdate), before you read, edit or run anything. Then work one task at a time: mark it in progress as you start it and completed as soon as it is done, never two steps in one update. Add a task when you find more work.`
+// What a subagent's task adds for the same, naming each task tool it may have, since its system prompt has no room for the section.
+const subagentBreakdown = (tools: string) =>
+  `# Task list\nThe person follows your work as a task list in a progress panel. When this task needs three or more distinct steps, your first tool call is a task list with every step as a task, made with the task tool you have (${tools}), before you read, edit or run anything. Then work one task at a time: mark it in progress as you start it and completed as soon as it is done, never two steps in one update. Add a task when you find more work. If you have none of these tools, go without a list.`
 
 // The section that has Claude break work into tasks even when nobody asked for a list.
 // Asked only to "write a list before you start", a model skipped it: it is told what its first call is.
@@ -382,7 +383,6 @@ export const register: Register = (on, options) => {
       return composed
     }
 
-    // A subagent's request is composed here too, with the tools it has.
     const tool = isBreakingDown ? LIST_TOOLS.find(([name]) => e.tools.includes(name)) : undefined
 
     return {
@@ -398,11 +398,18 @@ export const register: Register = (on, options) => {
   // not known when it starts: the task it is given asks for the list, naming each tool it may have. A fork carries
   // the session's prompt.
   on('agent.spawn', async ($, e, next) => {
-    if (!isBreakingDown || e.fork || (await $.session.surfaces()).length === 0) {
+    try {
+      if (!isBreakingDown || e.fork || (await $.session.surfaces()).length === 0) {
+        return next(e)
+      }
+    } catch {
+      // A session that cannot say where it draws starts the subagent with its task as it was.
       return next(e)
     }
 
-    return next({ ...e, prompt: `${e.prompt}\n\n${SUBAGENT_BREAKDOWN}` })
+    const tools = hasTasks ? `${TASKS_TOOL}, TodoWrite, or TaskCreate then TaskUpdate` : 'TodoWrite, or TaskCreate then TaskUpdate'
+
+    return next({ ...e, prompt: `${e.prompt}\n\n${subagentBreakdown(tools)}` })
   })
 
   on('command.run', { command: 'highlight' }, async ($, e) => {
@@ -1099,6 +1106,7 @@ export const register: Register = (on, options) => {
       const isRunning = task.status === 'in_progress'
       const open = problems(task).filter(problem => !problem.isFixed).length
       const files = outcome(task).files.length
+      // A failed check keeps its mark, the one a row needs to tell it from one that passed.
       const checked = checks(task).replace(/^[✓•] /, '')
       const line = isRunning ? task.active || task.subject : task.subject
       const when =

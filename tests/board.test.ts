@@ -450,6 +450,10 @@ describe('what a task changed and checked', () => {
     expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cat src/discount.js; ls test* tests 2>/dev/null' }] })).toBe('')
     expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cat test/cart.test.js && git diff build/' }] })).toBe('')
     expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'ls tests && pytest -q' }] })).toBe('✓ pytest -q passed')
+    // Nor is one that makes, moves or removes what a check reads.
+    for (const what of ['rm -rf build', 'mkdir -p build', 'cp fixture.json tests/', 'mv a.test.js test/', 'touch test/a.js', 'test -f build/out.js']) {
+      expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what }] })).toBe('')
+    }
     // It names the check itself, not the plumbing around it.
     expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cd /repo && npm test 2>&1 && git status' }] })).toBe('✓ npm test passed')
     // Piped into another command, or followed by one whatever it did, the exit code is not the check's: it ran, and how it went is not known.

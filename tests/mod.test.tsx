@@ -186,6 +186,14 @@ describe('the highlighter', () => {
       expect(given).toContain('TodoWrite')
     })
 
+    test('names only the task tools a subagent may have, and lets one with none go without', { options: { tasks: 'off' } }, async ($, on) => {
+      const given = await spawned($, on)
+
+      expect(given).toContain('TodoWrite')
+      expect(given).not.toContain('mcp__sentinel__tasks')
+      expect(given).toMatch(/none of these/)
+    })
+
     test('leaves a subagent’s task as it was when turned off', { options: { breakdown: 'off' } }, async ($, on) => {
       expect(await spawned($, on)).toBe('Add a test for an empty cart and run it.')
     })
