@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { aimed, asked, bar, carried, changed, checks, cleared, clocked, compact, counts, elapsed, EMPTY, ended, filled, filtered, fit, hasWork, isAsk, isLive, logged, named, nearby, noted, outcome, problems, progress, queue, reconciled, share, span, spent, stepped, summary, sweep, tasked, tooled } from '../hooks/lib/board'
+import { aimed, asked, bar, carried, changed, checks, cleared, clocked, compact, counts, described, elapsed, EMPTY, ended, filled, filtered, fit, hasWork, isAsk, isLive, logged, named, nearby, noted, outcome, problems, progress, queue, reconciled, share, span, spent, stepped, summary, sweep, tasked, tooled } from '../hooks/lib/board'
 
 const USAGE = { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 800 }
 
@@ -508,6 +508,19 @@ describe('the queue', () => {
 describe('clocked', () => {
   test('writes a stretch of time as a clock does', () => {
     expect([0, 42_000, 185_000, 3_730_000].map(clocked)).toEqual(['0:00', '0:42', '3:05', '1:02:10'])
+  })
+})
+
+describe('described', () => {
+  test('names a file by its path from where the session runs, as the panel shows it', () => {
+    expect(described({ file_path: '/repo/src/cart.js' }, '/repo')).toBe('src/cart.js')
+    expect(described({ notebook_path: '/repo/nb/a.ipynb' }, '/repo/')).toBe('nb/a.ipynb')
+    // A file outside it, or a directory that only starts the same, keeps its whole path.
+    expect(described({ file_path: '/etc/hosts' }, '/repo')).toBe('/etc/hosts')
+    expect(described({ file_path: '/repo-old/a.js' }, '/repo')).toBe('/repo-old/a.js')
+    // A command is left as it was given.
+    expect(described({ command: 'cat /repo/a.js' }, '/repo')).toBe('cat /repo/a.js')
+    expect(described({ file_path: '/repo/a.js' })).toBe('/repo/a.js')
   })
 })
 

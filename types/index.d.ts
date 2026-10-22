@@ -72,8 +72,10 @@ export type AgentRow = {
 export type Board = {
   /** The goal set with /goal, when one is. */
   goal: string | null
-  /** The prompt the turn in progress answers. */
+  /** The prompt the turn in progress answers, its first line as the band shows it. */
   ask: string
+  /** The same prompt whole, as the second reader is given it. */
+  prompt: string
   tasks: Task[]
   agents: AgentRow[]
   context: number

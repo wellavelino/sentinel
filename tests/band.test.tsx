@@ -42,12 +42,14 @@ function world(
   on: On,
   reply = '{"highlights": [], "missed": ""}',
   surfaces: readonly ('terminal' | 'desktop')[] = ['terminal'],
-): Said & { clock: ReturnType<typeof mock.clock>; launch: (agentId: string, agent?: Partial<Agent>) => void; loseList: () => void } {
+): Said & { clock: ReturnType<typeof mock.clock>; launch: (agentId: string, agent?: Partial<Agent>) => void; loseList: () => void; say: (text: string) => void } {
   const said: Said = { logs: [], opened: [], asks: [], calls: [], tools: [], registered: [] }
   const clock = mock.clock(on, { now: 1000 })
   // The agents the engine runs: each from the first time it is heard of until its run ends.
   const agents = new Map<string, Agent>()
   let isListLost = false
+  // What Claude writes in each step from here on.
+  let answer = ''
   const heard = (agentId: string | undefined) => {
     if (agentId !== undefined && !agents.has(agentId)) {
       agents.set(agentId, { status: 'running' })
@@ -67,7 +69,7 @@ function world(
     return {
       turnId: e.turnId,
       index: e.index,
-      answer: '',
+      answer,
       toolUses: [],
       stopReason: 'end_turn',
       usage: usage(e.agentId === undefined ? 40_000 : 10_000),
@@ -102,6 +104,7 @@ function world(
     },
   }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/repo' }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('tool.register', ($, e) => {
     said.registered.push({ name: e.name, isDeferred: e.isDeferred })
@@ -157,7 +160,11 @@ function world(
     isListLost = true
   }
 
-  return { ...said, clock, launch, loseList }
+  const say = (text: string) => {
+    answer = text
+  }
+
+  return { ...said, clock, launch, loseList, say }
 }
 
 // A subagent's tool call, as the engine raises it inside the agent's loop.
@@ -401,6 +408,25 @@ describe('the agents panel', () => {
     expect(texts.some(text => /^Grep · \d+:\d\d$/.test(text))).toBe(true)
     await ui.unmount()
   })
+
+  test('cuts a long answer to the row, so the subagent’s spend stays on it', async ($, on) => {
+    world(on)
+    await drain($.turn.step({ ...step, agentId: 'agent-1' }))
+    const answer = `I found three bugs in /home/avelino/shop-api/src/discount.js, ${'and more '.repeat(20)}`
+    await $.turn.complete({ answer, durationMs: 5, isAborted: false, turnId: 'turn-9', agentId: 'agent-1', reason: 'answer' })
+    await $.command.run(typed('progress', ''))
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
+    const at = texts.findIndex(text => text.startsWith('I found three bugs'))
+    const [row = '', spend = ''] = texts.slice(at, at + 2)
+
+    expect(row).toMatch(/… · \d+:\d\d$/)
+    expect(spend).toMatch(/^\d+k$/)
+    // The name (12), the mark, three gaps and the spend take the rest of the row.
+    expect([...row].length).toBe(PANE.props.bodyColumns - 12 - 1 - 3 - spend.length)
+    await ui.unmount()
+  })
 })
 
 describe('the agents board', () => {
@@ -604,6 +630,22 @@ describe('the task list in the panel', () => {
 const START = { cwd: '/work', surface: 'terminal', isInteractive: true } as const
 
 describe('a task opened from the panel', () => {
+  test('reads what Claude wrote of a task as Markdown, as the chat does', async ($, on) => {
+    const said = world(on)
+    said.say('**Fixed** the parser')
+    await $.turn.start({ text: 'Ship the parser', turnId: 'turn-1' })
+    await $.tool.call({ tool: 'TodoWrite', todos: [{ content: 'Fix it', status: 'in_progress', activeForm: 'Fixing it' }] } as never)
+    await drain($.turn.step(step))
+    await $.tool.call({ tool: 'TodoWrite', todos: [{ content: 'Fix it', status: 'completed', activeForm: 'Fixing it' }] } as never)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'task-main-0' })
+
+    expect((await ui.find({ key: 'tab-result' }))?.props.variant).toBe('primary')
+    expect(await ui.find({ type: 'Markdown', text: '**Fixed** the parser' })).toBeDefined()
+    await ui.unmount()
+  })
+
   test('shows the calls made while it ran, what failed and whether it was fixed, and what it came to', async ($, on) => {
     // Beneath the mod a test run fails once, then goes through.
     let runs = 0
@@ -617,10 +659,10 @@ describe('a task opened from the panel', () => {
     const said = world(on)
     await $.turn.start({ text: 'Ship the parser', turnId: 'turn-1' })
     await $.tool.call({ tool: 'TodoWrite', todos: TODOS.slice(0, 4) } as never)
-    await $.tool.call({ tool: 'Read', file_path: 'src/parser.ts' } as never)
+    await $.tool.call({ tool: 'Read', file_path: '/repo/src/parser.ts' } as never)
     await said.clock.advance(10_000)
     await $.tool.call({ tool: 'Bash', command: 'npm test' } as never)
-    await $.tool.call({ tool: 'Edit', file_path: 'src/parser.ts', old_string: 'a', new_string: 'b' } as never)
+    await $.tool.call({ tool: 'Edit', file_path: '/repo/src/parser.ts', old_string: 'a', new_string: 'b' } as never)
     await said.clock.advance(20_000)
     await $.tool.call({ tool: 'Bash', command: 'npm test' } as never)
 
@@ -814,6 +856,17 @@ describe('the second reader', () => {
     await said.clock.advance(1000)
 
     expect(said.asks).toEqual([])
+  })
+
+  test('gives the reader the whole prompt, not the line the band shows of it', async ($, on) => {
+    const said = world(on)
+    const prompt = `Make discount codes work in any case: first add a failing test for welcome10 and run node --test to see it fail, then fix src/discount.js.\nKeep the old codes working.`
+    await $.turn.start({ text: prompt, turnId: 'turn-1' })
+    await $.tool.call({ tool: 'Bash', command: 'node --test' })
+    await $.turn.complete(done)
+    await said.clock.advance(1000)
+
+    expect(said.asks[0]?.prompt).toContain(`<asked>\n${prompt}\n</asked>`)
   })
 
   test('asks haiku about the reply by default, highlights what it names and says what was left out', async ($, on) => {

@@ -3,6 +3,7 @@ import type { AgentRow, Board, Call, Filter, Task } from '../../types'
 export const EMPTY: Board = {
   goal: null,
   ask: '',
+  prompt: '',
   tasks: [],
   agents: [],
   context: 0,
@@ -20,6 +21,7 @@ const MAX_TASKS = 200
 const MAX_LABEL = 120
 const MAX_CALLS = 60
 const MAX_NOTE = 600
+const MAX_PROMPT = 8000
 const MAX_ERROR_LINES = 8
 const MAX_ERROR = 600
 
@@ -86,6 +88,7 @@ export function asked(board: Board, text: string): Board {
   return {
     ...board,
     ask: headline(text),
+    prompt: text.trim().slice(0, MAX_PROMPT),
     tasks: isDone ? [] : board.tasks,
     agents: board.agents.filter(agent => agent.status === 'running'),
   }
@@ -469,10 +472,15 @@ export function hasWork(board: Board): boolean {
   return board.goal !== null || board.tasks.length > 0 || board.agents.length > 0
 }
 
-/** What a call was given, in one line: its command, file, pattern or address. */
-export function described(input: unknown): string {
+/** What a call was given, in one line: its command, file, pattern or address; a file under `cwd` by its path from there. */
+export function described(input: unknown, cwd = ''): string {
   const given = record(input)
-  const first = [given.command, given.file_path, given.notebook_path, given.pattern, given.url, given.query, given.description]
+  const root = cwd.endsWith('/') ? cwd : `${cwd}/`
+  const file = (value: unknown) => {
+    const path = text(value)
+    return cwd !== '' && path.startsWith(root) ? path.slice(root.length) : path
+  }
+  const first = [given.command, file(given.file_path), file(given.notebook_path), given.pattern, given.url, given.query, given.description]
     .map(text)
     .find(value => value.trim() !== '')
 

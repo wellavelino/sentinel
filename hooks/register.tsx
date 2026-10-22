@@ -253,7 +253,7 @@ async function review(
         : await $.model.complete({
             model,
             system: REVIEW_SYSTEM,
-            prompt: reviewRequest(held.goal ?? held.ask, answer, digest),
+            prompt: reviewRequest(held.goal ?? (held.prompt || held.ask), answer, digest),
             maxTokens: 500,
             effort: 'low',
             timeoutMs: 30_000,
@@ -673,6 +673,7 @@ export const register: Register = (on, options) => {
       digest = counted(digest, tool, agentId !== undefined, isFailed ? (ran.deny ?? ran.text ?? '') : undefined)
 
       const now = await $.clock.now()
+      const cwd = await $.session.cwd().catch(() => '')
 
       if (agentId !== undefined || TASK_TOOLS.has(tool)) {
         await update($, board, held =>
@@ -688,7 +689,7 @@ export const register: Register = (on, options) => {
           return logged(held, agentId, {
             at: now,
             tool,
-            what: described(e),
+            what: described(e, cwd),
             error: isFailed ? failure(ran.deny ?? ran.text ?? '') : undefined,
             by,
             lines: isFailed ? undefined : changed(tool, e),
@@ -732,7 +733,7 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text, Button, Markdown } = $.ui.resolve(e)
     const work = await read($, board)
     const room = Math.max(20, e.props.bodyColumns)
     const now = await $.clock.now()
@@ -951,7 +952,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column">
             {task.note !== undefined && (
               <Box marginBottom={1}>
-                <Text wrap="wrap">{task.note}</Text>
+                <Markdown text={task.note} />
               </Box>
             )}
             <Text dimColor>FILES</Text>
@@ -1036,7 +1037,11 @@ export const register: Register = (on, options) => {
         <Box flexGrow={1} flexShrink={1}>
           {what}
         </Box>
-        {used > 0 && <Text dimColor>{compact(used)}</Text>}
+        {used > 0 && (
+          <Box flexShrink={0}>
+            <Text dimColor>{compact(used)}</Text>
+          </Box>
+        )}
       </Box>
     )
     const mainMark: readonly [string, string | undefined] =
@@ -1160,11 +1165,15 @@ export const register: Register = (on, options) => {
                         ? agent.last
                         : ''
 
+                const clock = clocked((agent.endedAt ?? now) - agent.startedAt)
+                // The name, the mark, the gaps and the spend take the rest of the row; what it said is cut to fit.
+                const width = room - THREAD_NAME - 3 - (agent.used > 0 ? compact(agent.used).length + 1 : 0) - clock.length - 3
+
                 return thread(
                   agent.label || agent.type || 'agent',
                   MARKS[agent.status],
                   <Text dimColor wrap="truncate-end">
-                    {[what, clocked((agent.endedAt ?? now) - agent.startedAt)].filter(part => part !== '').join(' · ')}
+                    {[fit(what, width), clock].filter(part => part !== '').join(' · ')}
                   </Text>,
                   agent.used,
                 )
