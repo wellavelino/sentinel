@@ -1,5 +1,3 @@
-import { isMarkdownRule } from './tables'
-
 /** A run of text drawn one way. */
 export type Segment = {
   text: string
@@ -406,4 +404,21 @@ export function layout(text: string, options: MarkOptions): Layout {
   }
 
   return { kind: 'plain', text: lines.join('\n') }
+}
+
+/** Whether `rule` is the line under a markdown table's `header`: dashes, colons and bars, a cell each. */
+function isMarkdownRule(header: string | undefined, rule: string | undefined): boolean {
+  if (header === undefined || rule === undefined || !header.includes('|') || !rule.includes('|')) {
+    return false
+  }
+
+  // Only dashes, colons, bars and blanks: checked first, so no long line is searched for more.
+  if (!/^[\s|:-]+$/.test(rule) || !rule.includes('-')) {
+    return false
+  }
+
+  const parts = rule.trim().replace(/^\|/, '').replace(/\|$/, '').split('|')
+  const cells = header.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/)
+
+  return parts.every(part => /^\s*:?-+:?\s*$/.test(part)) && cells.length === parts.length
 }

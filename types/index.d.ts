@@ -1,25 +1,3 @@
-export type Cell = string | null
-
-/** One captured table as the panel lists it; its rows are kept apart, by id. */
-export type DataTable = {
-  id: string
-  title: string
-  source: string
-  format: string
-  columns: string[]
-  rowCount: number
-  isTruncated: boolean
-}
-
-/** What the panel shows: which tab, which table, how many rows, from which column, which record. */
-export type View = {
-  tab: 'tables' | 'agents'
-  tableId: string | null
-  shown: number
-  column: number
-  row: number | null
-}
-
 /** What the second reader marked in one reply: the reply's lines, as fingerprints, and the phrases. */
 export type Reading = {
   lines: number[]
@@ -72,10 +50,7 @@ export type Board = {
 
 declare module 'claude-code' {
   interface PluginState {
-    mystique: {
-      tables: DataTable[]
-      rows: StateFamily<Cell[][]>
-      view: View
+    sentinel: {
       pens: string[]
       readings: Reading[]
       board: Board

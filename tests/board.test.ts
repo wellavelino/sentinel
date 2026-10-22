@@ -55,7 +55,7 @@ describe('the board', () => {
     board = aimed(board, 'all tests pass on main')
     expect(board.goal).toBe('all tests pass on main')
     expect(hasWork(board)).toBe(true)
-    expect(asked(board, '/tables')).toEqual(board)
+    expect(asked(board, '/progress')).toEqual(board)
     expect(asked(board, '<agent-message from="a1">done</agent-message>')).toEqual(board)
     expect(aimed(board, '').goal).toBe('all tests pass on main')
     expect(aimed(board, 'clear').goal).toBe(null)
@@ -107,7 +107,7 @@ describe('the board, the hard cases', () => {
       expect(isAsk(text)).toBe(true)
     }
 
-    for (const text of ['', '  ', '/tables', '/goal ship it', '/plugin:skill arg', '<agent-message from="a1">done</agent-message>', '<task-notification>x</task-notification>', '<system-reminder>x</system-reminder>', '<local-command-stdout>x</local-command-stdout>', '<command-name>/x</command-name>', '<teammate-message teammate_id="a">x</teammate-message>', '<cross-session-message>x</cross-session-message>']) {
+    for (const text of ['', '  ', '/progress', '/goal ship it', '/plugin:skill arg', '<agent-message from="a1">done</agent-message>', '<task-notification>x</task-notification>', '<system-reminder>x</system-reminder>', '<local-command-stdout>x</local-command-stdout>', '<command-name>/x</command-name>', '<teammate-message teammate_id="a">x</teammate-message>', '<cross-session-message>x</cross-session-message>']) {
       expect(isAsk(text)).toBe(false)
     }
   })

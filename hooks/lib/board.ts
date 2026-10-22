@@ -13,7 +13,7 @@ export const EMPTY: Board = {
 }
 
 /** The task tool the mod offers where the session has none: it takes a todo list whole. */
-export const TASKS_TOOL = 'mcp__mystique__tasks'
+export const TASKS_TOOL = 'mcp__sentinel__tasks'
 
 const MAX_AGENTS = 24
 const MAX_TASKS = 200

@@ -4,7 +4,7 @@ import type { On } from 'claude-code'
 const SURFACES = ['terminal', 'desktop'] as const
 
 const BAND = {
-  plugin: 'mystique',
+  plugin: 'sentinel',
   component: 'AbovePrompt',
   requestId: 'band',
   props: {
@@ -87,7 +87,7 @@ function world(
   on('tool.register', ($, e) => {
     said.registered.push({ name: e.name, isDeferred: e.isDeferred })
 
-    return { value: { tool: `mcp__mystique__${e.name}` } }
+    return { value: { tool: `mcp__sentinel__${e.name}` } }
   })
   on('session.surfaces', () => ({ value: surfaces }))
   on('agent.list', () => ({
@@ -248,13 +248,13 @@ const done = { answer: ANSWER, durationMs: 5, isAborted: false, turnId: 'turn-1'
 const marked = async (ui: { findAll: (query: { type: string }) => Promise<{ text: string; props: Record<string, unknown> }[]> }) =>
   (await ui.findAll({ type: 'Text' })).filter(text => text.props.backgroundColor !== undefined).map(text => text.text)
 
-const message = { plugin: 'mystique', component: 'AssistantMessage', requestId: 'message-1', props: { text: ANSWER, isFirstOfReply: true } } as const
+const message = { plugin: 'sentinel', component: 'AssistantMessage', requestId: 'message-1', props: { text: ANSWER, isFirstOfReply: true } } as const
 
 const PANE = {
-  plugin: 'mystique',
+  plugin: 'sentinel',
   component: 'Pane',
-  requestId: 'mystique',
-  props: { title: 'mystique', isFocused: false, bodyColumns: 70, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+  requestId: 'sentinel',
+  props: { title: 'sentinel', isFocused: false, bodyColumns: 70, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
 } as const
 
 describe('the agents panel', () => {
@@ -274,11 +274,11 @@ describe('the agents panel', () => {
     expect(said.opened).toEqual([])
 
     await drain($.turn.step({ ...step, agentId: 'agent-1' }))
-    expect(said.opened).toEqual(['mystique'])
+    expect(said.opened).toEqual(['sentinel'])
 
     // A second request of the same agent is no news: the panel is not asked for again.
     await drain($.turn.step({ ...step, agentId: 'agent-1' }))
-    expect(said.opened).toEqual(['mystique'])
+    expect(said.opened).toEqual(['sentinel'])
 
     await $.tool.call(AGENT_CALL)
     await said.clock.advance(72_000)
@@ -288,7 +288,6 @@ describe('the agents panel', () => {
       const ui = await $.ui.mount({ ...PANE, surface })
       const texts = async () => (await ui.findAll({ type: 'Text' })).map(text => text.text)
 
-      expect((await ui.find({ key: 'tab-agents' }))?.props).toMatchObject({ label: 'Agents 1', variant: 'primary' })
       expect(await texts()).toContain('● 1 running')
       expect(await texts()).toContain('◆ Goal')
       expect(await texts()).toContain('all parser tests pass')
@@ -326,7 +325,7 @@ describe('the agents board', () => {
     expect(said.opened).toEqual([])
 
     expect((await $.command.run(typed('progress', ''))).text).toBe('Panel opened: no tasks · 1 subagent on the board.\n◆ Working on: Review the parser\n↳ Review the parser · running')
-    expect(said.opened).toEqual(['mystique'])
+    expect(said.opened).toEqual(['sentinel'])
   })
 
   test('lets go of an agent the engine no longer runs when the next prompt comes', async ($, on) => {
@@ -505,7 +504,7 @@ describe('the mod’s own task tool', () => {
   test('keeps the list the model sends, shows it, and answers how far the work is', async ($, on) => {
     const said = world(on)
     await $.turn.start({ text: 'Ship the parser', turnId: 'turn-1' })
-    const ran = await $.tool.call({ tool: 'mcp__mystique__tasks', todos: TODOS } as never)
+    const ran = await $.tool.call({ tool: 'mcp__sentinel__tasks', todos: TODOS } as never)
 
     expect(ran.text).toBe('Task list kept: 2 of 12 done, now: Doing step 3.')
     expect(ran.result).toBe('Task list kept: 2 of 12 done, now: Doing step 3.')
@@ -526,14 +525,14 @@ describe('the mod’s own task tool', () => {
   test('books a subagent’s list on its own card', async ($, on) => {
     world(on)
     await drain($.turn.step({ ...step, agentId: 'agent-1' }))
-    await $.tool.call({ tool: 'mcp__mystique__tasks', todos: TODOS.slice(0, 3), agentId: 'agent-1' } as never)
+    await $.tool.call({ tool: 'mcp__sentinel__tasks', todos: TODOS.slice(0, 3), agentId: 'agent-1' } as never)
 
     expect((await $.command.run(typed('progress', ''))).text).toMatch(/↳ Review the parser · running · 2 of 3 tasks done/)
   })
 
   test('tells the model what to send when the list is missing', async ($, on) => {
     world(on)
-    const ran = await $.tool.call({ tool: 'mcp__mystique__tasks' } as never)
+    const ran = await $.tool.call({ tool: 'mcp__sentinel__tasks' } as never)
 
     expect(ran.isError).toBe(true)
     expect(ran.text).toMatch(/todos/)
@@ -544,7 +543,7 @@ describe('the mod’s own task tool', () => {
     world(on)
     on('tool.check', () => ({ decision: 'ask' }))
 
-    expect((await $.tool.check({ tool: 'mcp__mystique__tasks', input: { todos: [] } } as never)).decision).toBe('allow')
+    expect((await $.tool.check({ tool: 'mcp__sentinel__tasks', input: { todos: [] } } as never)).decision).toBe('allow')
     expect((await $.tool.check({ tool: 'Bash', input: { command: 'ls' } } as never)).decision).toBe('ask')
   })
 
@@ -552,7 +551,7 @@ describe('the mod’s own task tool', () => {
     world(on)
     on('tool.check', () => ({ decision: 'deny', reason: 'a rule of the person’s' }))
 
-    expect(await $.tool.check({ tool: 'mcp__mystique__tasks', input: { todos: [] } } as never)).toMatchObject({ decision: 'deny', reason: 'a rule of the person’s' })
+    expect(await $.tool.check({ tool: 'mcp__sentinel__tasks', input: { todos: [] } } as never)).toMatchObject({ decision: 'deny', reason: 'a rule of the person’s' })
   })
 
   test('draws a very long list within what one drawing holds, and says what it left out', async ($, on) => {
@@ -562,9 +561,9 @@ describe('the mod’s own task tool', () => {
       status: index < 100 ? 'completed' : index === 100 ? 'in_progress' : 'pending',
       activeForm: `Doing step ${index + 1}`,
     }))
-    await $.tool.call({ tool: 'mcp__mystique__tasks', todos: many } as never)
+    await $.tool.call({ tool: 'mcp__sentinel__tasks', todos: many } as never)
     await drain($.turn.step({ ...step, agentId: 'agent-1' }))
-    await $.tool.call({ tool: 'mcp__mystique__tasks', todos: many, agentId: 'agent-1' } as never)
+    await $.tool.call({ tool: 'mcp__sentinel__tasks', todos: many, agentId: 'agent-1' } as never)
     await $.command.run(typed('progress', ''))
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })

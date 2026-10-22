@@ -1,7 +1,7 @@
 {
-  "name": "mystique",
-  "version": "0.2.0",
-  "description": "A highlighter pen for Claude's replies, and a side panel for query results as tables and for the goal, the tasks and every subagent.",
+  "name": "sentinel",
+  "version": "0.3.0",
+  "description": "A progress panel and band for the goal, every task and every subagent, and a highlighter pen for Claude's replies.",
   "author": {
     "name": "wellavelino",
     "url": "https://github.com/wellavelino"
@@ -9,8 +9,6 @@
   "license": "MIT",
   "keywords": [
     "highlight",
-    "database",
-    "table",
     "pane",
     "progress",
     "subagents",
@@ -22,7 +20,7 @@
     "highlight": {
       "type": "string",
       "title": "Highlighter",
-      "description": "Who marks what matters in a reply. reader: a second, small model reads each reply after the turn and marks it. claude: the replying model marks its own text as it writes (no extra call; adds a short section to the system prompt). both: the two together. bold: every bold phrase. off: only your own /highlight marks.",
+      "description": "Who marks what matters in a reply. reader: a second, small model reads each reply after the turn and marks it. claude: the replying model marks its own text as it writes (no extra call; adds a short section to the system prompt). both: the two together. bold: every bold phrase. off: the highlighter does nothing by itself; only your own /highlight marks.",
       "options": [
         "reader",
         "claude",
@@ -61,17 +59,6 @@
       "description": "The model the fast second reader uses: an alias (haiku) or a full model id.",
       "default": "haiku"
     },
-    "capture": {
-      "type": "string",
-      "title": "Table capture",
-      "description": "Which results the data panel picks up. databases: database clients and database MCP tools. everything: any table-shaped tool output. off: none.",
-      "options": [
-        "databases",
-        "everything",
-        "off"
-      ],
-      "default": "databases"
-    },
     "band": {
       "type": "string",
       "title": "Progress band",
@@ -85,7 +72,7 @@
     "panel": {
       "type": "string",
       "title": "Panel",
-      "description": "When the side panel opens. auto: by itself, for a query result or a new subagent. manual: only when you type /tables or /progress (a toast tells you a table was captured).",
+      "description": "When the side panel opens. auto: by itself, when a subagent starts. manual: only when you type /progress.",
       "options": [
         "auto",
         "manual"
