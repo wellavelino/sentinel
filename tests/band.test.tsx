@@ -182,8 +182,9 @@ describe('the progress band', () => {
     await ui.unmount()
   })
 
-  test('shows the goal, the task bar, the context and the session limit', async ($, on) => {
-    world(on)
+  test('draws the count, the bar, the task in progress by its number and time, the problems and the context', async ($, on) => {
+    on('tool.call', { tool: 'Bash' }, () => ({ result: 'boom', text: 'boom', isError: true }))
+    const said = world(on)
     await $.turn.start({ text: 'Ship the parser', turnId: 'turn-1' })
     await $.command.run(typed('goal', 'all parser tests pass'))
     await $.tool.call({
@@ -195,18 +196,23 @@ describe('the progress band', () => {
         { content: 'Announce', status: 'pending', activeForm: 'Announcing' },
       ],
     })
+    await $.tool.call({ tool: 'Bash', command: 'npm test' })
     await drain($.turn.step(step))
+    await said.clock.advance(65_000)
 
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ ...BAND, surface })
       const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
 
-      expect(texts).toContain('Goal: all parser tests pass')
-      expect(texts.some(text => /1\/4/.test(text))).toBe(true)
-      expect(texts).toContain('███')
-      expect(texts.some(text => /▸ Writing tests/.test(text))).toBe(true)
-      expect(texts.some(text => /21% 42k/.test(text))).toBe(true)
-      expect(texts).toContain('35%')
+      expect(texts).toContain('1/4')
+      expect(texts).toContain('█████')
+      expect(texts).toContain('◐ 2. Writing tests')
+      expect(texts).toContain('1:05')
+      expect(texts).toContain('! 1 problem')
+      expect(texts).toContain(' 21%')
+      expect(texts).toContain('└ next: 3. Ship')
+      // The use and the session limits are the panel's, not the band's.
+      expect(texts.some(text => /of use|5h/.test(text))).toBe(false)
       await ui.unmount()
     }
   })
@@ -240,25 +246,24 @@ describe('the progress band', () => {
     await ui.unmount()
   })
 
-  test('gives each subagent a row: what it does, its context and its share of the use', async ($, on) => {
-    world(on)
+  test('follows each subagent on the second line: its name, how it stands and its time', async ($, on) => {
+    const said = world(on)
     await $.turn.start({ text: 'Review the parser', turnId: 'turn-1' })
     await drain($.turn.step(step))
     await drain($.turn.step({ ...step, agentId: 'agent-1' }))
     await $.tool.call(AGENT_CALL)
-    await $.tool.call(AGENT_CALL)
+    await said.clock.advance(72_000)
 
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
     const texts = async () => (await ui.findAll({ type: 'Text' })).map(text => text.text)
 
     expect(await texts()).toContain('Review the parser')
-    expect(await texts()).toContain('running · 2 tools · Bash')
-    expect((await texts()).some(text => /6% 12k/.test(text))).toBe(true)
-    expect(await texts()).toContain('64% of use')
-    expect(await texts()).toContain('36% of use')
+    expect(await texts()).toContain('└ Review the parser')
+    expect(await texts()).toContain('◐')
+    expect(await texts()).toContain('1:12')
 
     await $.turn.complete({ answer: 'done', durationMs: 5, isAborted: false, turnId: 'turn-9', agentId: 'agent-1', reason: 'answer' })
-    expect(await texts()).toContain('done · 2 tools')
+    expect(await texts()).toContain('✓')
 
     // The next prompt clears the agents that finished.
     await $.turn.start({ text: 'Next', turnId: 'turn-2' })

@@ -8,6 +8,7 @@ import {
   bar,
   changed,
   cleared,
+  clocked,
   compact,
   described,
   elapsed,
@@ -24,6 +25,7 @@ import {
   outcome,
   problems,
   progress,
+  queue,
   pulse,
   reconciled,
   share,
@@ -558,121 +560,89 @@ export const register: Register = (on, options) => {
       }
 
       const { Box, Text } = $.ui.resolve(e)
-      const isWide = e.props.bodyColumns >= 100
-      const heat = (percent: number) => (percent >= 90 ? 'error' : percent >= 70 ? 'warning' : 'success')
+      const now = await $.clock.now()
       const meter = (fraction: number, width: number, color: string) => {
         const drawn = bar(fraction, width)
 
         return (
           <Text>
             <Text color={color}>{drawn.full}</Text>
-            <Text dimColor>{drawn.rest}</Text>
+            <Text dimColor>{'█'.repeat(drawn.rest.length)}</Text>
           </Text>
         )
       }
-      const context = (tokens: number) => {
-        if (tokens <= 0) {
-          return null
-        }
-
-        const percent = held.window > 0 ? Math.round((tokens / held.window) * 100) : null
-
-        return (
-          <Box marginLeft={2} flexShrink={0}>
-            <Text dimColor>ctx </Text>
-            {percent !== null && meter(percent / 100, 5, heat(percent))}
-            <Text>
-              {percent === null ? '' : ` ${percent}%`}
-              {isWide || percent === null ? ` ${compact(tokens)}` : ''}
-            </Text>
-          </Box>
-        )
-      }
-      const tasks = (list: AgentRow['tasks']) => {
-        const { done, total } = progress(list)
-
-        return (
-          total > 0 && (
-            <Box marginLeft={2} flexShrink={0}>
-              {meter(done / total, 10, 'success')}
-              <Text>
-                {' '}
-                {done}/{total}
-              </Text>
-            </Box>
-          )
-        )
-      }
-      const current = progress(held.tasks).current
-      // One row is kept for the count of the agents that do not fit.
-      const room = Math.max(0, Math.min(MAX_AGENT_ROWS, e.props.maxRows - (current === '' ? 1 : 2) - 1))
+      const entries = queue(held)
+      const done = entries.filter(entry => entry.task.status === 'completed').length
+      const running = entries.find(entry => entry.task.status === 'in_progress')
+      const upcoming = entries.find(entry => entry.task.status === 'pending')
+      const open = entries.reduce((sum, entry) => sum + problems(entry.task).filter(problem => !problem.isFixed).length, 0)
+      const percent = held.window > 0 && held.context > 0 ? Math.round((held.context / held.window) * 100) : null
       // Those still running first: what is finished waits for the next prompt to leave.
       const agents = [...held.agents].sort(
         (one, other) => Number(other.status === 'running') - Number(one.status === 'running'),
       )
-      const drawn = agents.slice(0, room)
-      const labelWidth = Math.min(28, drawn.reduce((most, agent) => Math.max(most, [...agent.label].length), 5))
+      const MARKS = { running: ['◐', 'warning'], done: ['✓', 'success'], failed: ['✕', 'error'] } as const
 
       return (
         <Box flexDirection="column">
-          <Box flexDirection="row">
-            <Text color="claude">◆ </Text>
-            <Box flexGrow={1} flexShrink={1}>
-              <Text bold wrap="truncate-end">
-                {held.goal === null ? held.ask || 'Working' : `Goal: ${held.goal}`}
-              </Text>
-            </Box>
-            {tasks(held.tasks)}
-            {context(held.context)}
-            {isWide && held.agents.length > 0 && (
-              <Box marginLeft={2} flexShrink={0}>
-                <Text dimColor>{share(held, held.used)}% of use</Text>
+          <Box flexDirection="row" gap={1}>
+            <Text color="warning">◆</Text>
+            {entries.length > 0 && (
+              <Box flexShrink={0} gap={1}>
+                <Text bold>
+                  {done}/{entries.length}
+                </Text>
+                {meter(done / entries.length, 20, 'success')}
               </Box>
             )}
-            {isWide &&
-              held.limits
-                .filter(limit => limit.kind === 'five_hour' || limit.kind === 'seven_day')
-                .map(limit => (
-                  <Box marginLeft={2} flexShrink={0}>
-                    <Text dimColor>{limit.kind === 'five_hour' ? '5h' : '7d'} </Text>
-                    <Text color={heat(limit.percent)}>{Math.round(limit.percent)}%</Text>
-                  </Box>
-                ))}
+            <Box flexGrow={1} flexShrink={1}>
+              {running === undefined ? (
+                <Text bold wrap="truncate-end">
+                  {held.goal === null ? held.ask || 'Working' : `Goal: ${held.goal}`}
+                </Text>
+              ) : (
+                <Text color="warning" wrap="truncate-end">
+                  ◐ {running.n}. {running.task.active || running.task.subject}
+                </Text>
+              )}
+            </Box>
+            {running?.task.startedAt !== undefined && (
+              <Text dimColor>{clocked(now - running.task.startedAt)}</Text>
+            )}
+            {open > 0 && (
+              <Text color="error">
+                ! {open} problem{open === 1 ? '' : 's'}
+              </Text>
+            )}
+            {percent !== null && (
+              <Box flexShrink={0} marginLeft={1}>
+                <Text dimColor>ctx </Text>
+                {meter(percent / 100, 10, 'permission')}
+                <Text dimColor> {percent}%</Text>
+              </Box>
+            )}
           </Box>
-          {current !== '' && (
-            <Text dimColor wrap="truncate-end">
-              {'  ▸ '}
-              {current}
-            </Text>
-          )}
-          {drawn.map(agent => (
-            <Box flexDirection="row">
-              <Text dimColor>{'  ↳ '}</Text>
-              <Box width={labelWidth} flexShrink={0}>
-                <Text dimColor={agent.status !== 'running'} wrap="truncate-end">
-                  {agent.label || 'agent'}
-                </Text>
-              </Box>
-              <Box marginLeft={2} flexGrow={1} flexShrink={1}>
-                <Text color={agent.status === 'failed' ? 'error' : undefined} dimColor wrap="truncate-end">
-                  {agent.status}
-                  {agent.tools > 0 ? ` · ${agent.tools} tool${agent.tools === 1 ? '' : 's'}` : ''}
-                  {agent.status === 'running' && agent.last !== '' ? ` · ${agent.last}` : ''}
-                </Text>
-              </Box>
-              {tasks(agent.tasks)}
-              {context(agent.context)}
-              {isWide && (
-                <Box marginLeft={2} flexShrink={0}>
-                  <Text dimColor>{share(held, agent.used)}% of use</Text>
+          {(agents.length > 0 || upcoming !== undefined) && (
+            <Box flexDirection="row" paddingLeft={2} gap={3}>
+              {agents.slice(0, MAX_AGENT_ROWS).map((agent, index) => (
+                <Box flexShrink={0} gap={1}>
+                  <Text dimColor>
+                    {index === 0 ? '└ ' : ''}
+                    {agent.label || 'agent'}
+                  </Text>
+                  <Text color={MARKS[agent.status][1]}>{MARKS[agent.status][0]}</Text>
+                  <Text dimColor>{clocked((agent.endedAt ?? now) - agent.startedAt)}</Text>
+                </Box>
+              ))}
+              {agents.length > MAX_AGENT_ROWS && <Text dimColor>+{agents.length - MAX_AGENT_ROWS} more</Text>}
+              {upcoming !== undefined && (
+                <Box flexShrink={1}>
+                  <Text dimColor wrap="truncate-end">
+                    {agents.length === 0 ? '└ ' : ''}next: {upcoming.n}. {upcoming.task.subject}
+                  </Text>
                 </Box>
               )}
             </Box>
-          ))}
-          {agents.length > drawn.length && (
-            <Text dimColor>
-              {'  '}+{agents.length - drawn.length} more agent{agents.length - drawn.length === 1 ? '' : 's'}
-            </Text>
           )}
         </Box>
       )
