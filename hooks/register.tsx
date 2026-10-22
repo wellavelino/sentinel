@@ -595,7 +595,7 @@ export const register: Register = (on, options) => {
                 {meter(done / entries.length, 20, 'success')}
               </Box>
             )}
-            <Box flexGrow={1} flexShrink={1}>
+            <Box flexShrink={1}>
               {running === undefined ? (
                 <Text bold wrap="truncate-end">
                   {held.goal === null ? held.ask || 'Working' : `Goal: ${held.goal}`}
@@ -614,8 +614,10 @@ export const register: Register = (on, options) => {
                 ! {open} problem{open === 1 ? '' : 's'}
               </Text>
             )}
+            {/* The context keeps to the right edge; the rest reads from the left. */}
+            <Box flexGrow={1} />
             {percent !== null && (
-              <Box flexShrink={0} marginLeft={1}>
+              <Box flexShrink={0}>
                 <Text dimColor>ctx </Text>
                 {meter(percent / 100, 10, 'permission')}
                 <Text dimColor> {percent}%</Text>
