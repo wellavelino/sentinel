@@ -364,7 +364,7 @@ describe('the agents panel', () => {
       expect(await texts()).toContain('task 2 · ctx ')
       expect(await texts()).toContain(' 21%')
       expect(await texts()).toContain('Review the parser')
-      expect(await texts()).toContain('1:12')
+      expect(await texts()).toContain('Bash · 1:12')
       // Every task in one list, numbered, each with when it ran and where.
       expect(await texts()).toContain('Write parser')
       expect(await texts()).toContain('Writing tests')
@@ -386,6 +386,19 @@ describe('the agents panel', () => {
 
     expect(texts).toContain('✓')
     expect(texts).toContain('found 3 parser bugs · 1:20')
+    await ui.unmount()
+  })
+
+  test('shows what a subagent with no list of its own is at: its last tool', async ($, on) => {
+    world(on)
+    await drain($.turn.step({ ...step, agentId: 'agent-1' }))
+    await $.tool.call({ tool: 'Grep', pattern: 'parse', agentId: 'agent-1' } as never)
+    await $.command.run(typed('progress', ''))
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
+
+    expect(texts.some(text => /^Grep · \d+:\d\d$/.test(text))).toBe(true)
     await ui.unmount()
   })
 })
@@ -784,6 +797,10 @@ describe('the mod’s own task tool', () => {
 
     expect(texts.reduce((sum, text) => sum + text.length, 0)).toBeLessThan(30_000)
     expect(texts).toContain('101. Doing step 101')
+    // A title longer than the row is cut to it, as the design draws it: on one line.
+    const title = texts.find(text => text.startsWith('102. Step 102 x')) ?? ''
+    expect(title.endsWith('…')).toBe(true)
+    expect(title.length).toBeLessThan(PANE.props.bodyColumns)
     expect(texts).toContain('  … 99 done before')
     expect(texts.some(text => /^  … \d+ more to do$/.test(text))).toBe(true)
     await ui.unmount()

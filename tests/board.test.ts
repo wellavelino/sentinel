@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { aimed, asked, bar, carried, changed, checks, cleared, clocked, compact, counts, elapsed, EMPTY, ended, filled, filtered, hasWork, isAsk, isLive, logged, named, nearby, noted, outcome, problems, progress, queue, reconciled, share, span, spent, stepped, summary, sweep, tasked, tooled } from '../hooks/lib/board'
+import { aimed, asked, bar, carried, changed, checks, cleared, clocked, compact, counts, elapsed, EMPTY, ended, filled, filtered, fit, hasWork, isAsk, isLive, logged, named, nearby, noted, outcome, problems, progress, queue, reconciled, share, span, spent, stepped, summary, sweep, tasked, tooled } from '../hooks/lib/board'
 
 const USAGE = { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 800 }
 
@@ -446,6 +446,8 @@ describe('what a task changed and checked', () => {
     // A command that checks nothing is not a check.
     expect(checks({ ...task, calls: [...task.calls, { at: 6, tool: 'Bash', what: 'git status' }] })).toBe('✓ npm test passed')
     expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'git status' }] })).toBe('')
+    // It names the check itself, not the plumbing around it.
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cd /repo && npm test 2>&1 | tail -n 12' }] })).toBe('✓ npm test passed')
   })
 })
 
@@ -506,5 +508,13 @@ describe('the queue', () => {
 describe('clocked', () => {
   test('writes a stretch of time as a clock does', () => {
     expect([0, 42_000, 185_000, 3_730_000].map(clocked)).toEqual(['0:00', '0:42', '3:05', '1:02:10'])
+  })
+})
+
+describe('fit', () => {
+  test('cuts a line to the columns it has, with an ellipsis, and leaves a short one as it is', () => {
+    expect(fit('Fix the parser', 20)).toBe('Fix the parser')
+    expect(fit('Fix the parser and its tests', 12)).toBe('Fix the par…')
+    expect(fit('Fix', 0)).toBe('…')
   })
 })

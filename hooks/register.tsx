@@ -17,6 +17,7 @@ import {
   ended,
   failure,
   filtered,
+  fit,
   hasWork,
   isAsk,
   isLive,
@@ -1082,8 +1083,9 @@ export const register: Register = (on, options) => {
                   hotkey={n <= 9 ? String(n) : undefined}
                   onPress={opener(entry.thread.id, task)}
                 >
-                  <Text bold={isRunning} dimColor={task.status === 'pending'} wrap="truncate-end">
-                    {n <= 9 ? line : `${n}. ${line}`}
+                  {/* A Button draws its children as they are, so the title is cut to the row here. */}
+                  <Text bold={isRunning} dimColor={task.status === 'pending'}>
+                    {fit(n <= 9 ? line : `${n}. ${line}`, room - (n <= 9 ? 3 : 0) - (when === '' ? 0 : when.length + 1) - 5)}
                   </Text>
                 </Button>
               </Box>
@@ -1149,7 +1151,14 @@ export const register: Register = (on, options) => {
               )}
               {[...work.agents].reverse().map(agent => {
                 const at = entries.find(entry => entry.thread.id === agent.id && entry.task.status === 'in_progress')
-                const what = agent.status !== 'running' && agent.said ? agent.said : at === undefined ? '' : `task ${at.n}`
+                const what =
+                  agent.status !== 'running' && agent.said
+                    ? agent.said
+                    : at !== undefined
+                      ? `task ${at.n}`
+                      : agent.status === 'running'
+                        ? agent.last
+                        : ''
 
                 return thread(
                   agent.label || agent.type || 'agent',

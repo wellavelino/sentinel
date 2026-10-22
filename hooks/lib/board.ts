@@ -616,6 +616,13 @@ export function outcome(task: Task): { files: FileChange[]; commands: number; fi
   }
 }
 
+/** A line cut to the columns it has, its last one an ellipsis where it is cut. */
+export function fit(text: string, width: number): string {
+  const chars = [...text]
+
+  return chars.length <= width ? text : `${chars.slice(0, Math.max(0, width - 1)).join('')}…`
+}
+
 /** A command that tests, lints, typechecks or builds, as against one that only looks around. */
 const CHECK = /\b(test|tests|spec|lint|check|typecheck|tsc|build|verify|vitest|jest|pytest|eslint|biome|ruff|mypy|clippy)\b/
 
@@ -623,7 +630,19 @@ const CHECK = /\b(test|tests|spec|lint|check|typecheck|tsc|build|verify|vitest|j
 export function checks(task: Task): string {
   const last = (task.calls ?? []).findLast(call => call.tool === 'Bash' && CHECK.test(call.what))
 
-  return last === undefined ? '' : last.error === undefined ? `✓ ${last.what} passed` : `✕ ${last.what} failed`
+  if (last === undefined) {
+    return ''
+  }
+
+  // The part of the command line that checks, without its redirections: `cd x && npm test 2>&1 | tail` is `npm test`.
+  const named =
+    last.what
+      .split(/\s*(?:&&|\|\||;|\|)\s*/)
+      .find(part => CHECK.test(part))
+      ?.replace(/\s*\d*>&?\s*\S+/g, '')
+      .trim() || last.what
+
+  return last.error === undefined ? `✓ ${named} passed` : `✕ ${named} failed`
 }
 
 /** One task of the queue: its number in it, its place in its thread's list, and the thread. */
