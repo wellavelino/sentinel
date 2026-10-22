@@ -137,7 +137,7 @@ describe('the highlighter', () => {
 })
 
 describe('the panel', () => {
-  test('/progress opens it on the goal, the tasks and the main thread, and says what is on the board', async ($, on) => {
+  test('/progress opens it on the goal and the tasks, and says what is on the board', async ($, on) => {
     const { opened } = world(on, '')
     on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [] } }))
 
@@ -147,9 +147,10 @@ describe('the panel', () => {
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ ...PANE, surface })
 
-      expect(await ui.find({ type: 'Text', text: '◆ sentinel' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: 'Main thread' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /No subagents yet/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'sentinel' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'GOAL' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'Nothing yet. Your next prompt shows here.' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /No task list yet/ })).toBeDefined()
       expect(await ui.find({ type: 'Button' })).toBeUndefined()
       await ui.unmount()
     }

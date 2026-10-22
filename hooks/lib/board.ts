@@ -423,19 +423,6 @@ export function sweep(width: number, frame: number): { before: string; lit: stri
   return { before: '─'.repeat(at), lit: '━'.repeat(lit), after: '─'.repeat(reach - at) }
 }
 
-const PULSE = ['░', '▒', '▓', '▒']
-const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-
-/** The cell at a bar's growing edge, at `frame`: it swells and fades while the work goes on. */
-export function pulse(frame: number): string {
-  return PULSE[frame % PULSE.length] ?? '░'
-}
-
-/** The mark of a thread at work, at `frame`. */
-export function spinner(frame: number): string {
-  return SPINNER[frame % SPINNER.length] ?? '⠋'
-}
-
 /** Whether anything on the board is being worked on now: a task in progress, an agent running. */
 export function isLive(board: Board): boolean {
   const isDoing = (tasks: readonly Task[]) => tasks.some(task => task.status === 'in_progress')

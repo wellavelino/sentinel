@@ -299,6 +299,13 @@ const done = { answer: ANSWER, durationMs: 5, isAborted: false, turnId: 'turn-1'
 const marked = async (ui: { findAll: (query: { type: string }) => Promise<{ text: string; props: Record<string, unknown> }[]> }) =>
   (await ui.findAll({ type: 'Text' })).filter(text => text.props.backgroundColor !== undefined).map(text => text.text)
 
+// The moving bars of the tasks in progress, each as the dim part before its lit stretch: what moves.
+const sweeps = async (ui: { findAll: (query: { type: string }) => Promise<{ text: string; props: Record<string, unknown> }[]> }) => {
+  const all = await ui.findAll({ type: 'Text' })
+
+  return all.flatMap((text, index) => (text.props.color === 'warning' && /^█{3}$/.test(text.text) ? [all[index - 1]?.text ?? ''] : []))
+}
+
 const message = { plugin: 'sentinel', component: 'AssistantMessage', requestId: 'message-1', props: { text: ANSWER, isFirstOfReply: true } } as const
 
 const PANE = {
@@ -309,7 +316,7 @@ const PANE = {
 } as const
 
 describe('the agents panel', () => {
-  test('opens for a new subagent and gives it a card: status, time, tools, context, use', async ($, on) => {
+  test('opens for a new subagent, and draws the goal, a row a thread and every task in one list', async ($, on) => {
     const said = world(on)
     await $.turn.start({ text: 'Review the parser', turnId: 'turn-1' })
     await $.command.run(typed('goal', 'all parser tests pass'))
@@ -339,31 +346,38 @@ describe('the agents panel', () => {
       const ui = await $.ui.mount({ ...PANE, surface })
       const texts = async () => (await ui.findAll({ type: 'Text' })).map(text => text.text)
 
-      expect(await texts()).toContain('● 1 running')
-      expect(await texts()).toContain('◆ Goal')
+      expect(await texts()).toContain('sentinel')
+      expect(await texts()).toContain('1/3 · 1:12')
+      expect(await texts()).toContain('GOAL')
       expect(await texts()).toContain('all parser tests pass')
-      expect(await texts()).toContain('1/3')
+      expect(await texts()).toContain('33%')
+      // A row a thread: the main one on its task and its context, each agent on what it is at.
+      expect(await texts()).toContain('main')
+      expect(await texts()).toContain('task 2 · ctx ')
+      expect(await texts()).toContain(' 21%')
+      expect(await texts()).toContain('Review the parser')
+      expect(await texts()).toContain('1:12')
+      // Every task in one list, numbered, each with when it ran and where.
       expect(await texts()).toContain('Write parser')
       expect(await texts()).toContain('Writing tests')
-      expect(await texts()).toContain('Main thread')
-      expect(await texts()).toContain('21%  42k of 200k')
-      expect(await texts()).toContain('5h 35%')
-      expect(await texts()).toContain('Review the parser')
-      expect(await texts()).toContain('running 1m 12s')
-      expect(await texts()).toContain('general-purpose · 2 tools · now: Bash')
-      expect(await texts()).toContain('6%  12k')
+      expect(await texts()).toContain('1:12 ▸')
+      expect(await texts()).toContain('queued')
+      expect((await ui.find({ key: 'filter-all' }))?.props.label).toBe('All 3')
+      expect((await ui.find({ key: 'filter-done' }))?.props.label).toBe('Done 1')
+      expect(await texts()).toContain('1–9 open  f filter  esc back to chat')
+      // The cards, the limits and the share of use are gone.
+      expect((await texts()).some(text => /Main thread|5h|of session|running 1m/.test(text))).toBe(false)
       await ui.unmount()
     }
 
     await said.clock.advance(8000)
-    await $.turn.complete({ answer: 'done', durationMs: 5, isAborted: false, turnId: 'turn-9', agentId: 'agent-1', reason: 'answer' })
+    await $.turn.complete({ answer: 'found 3 parser bugs', durationMs: 5, isAborted: false, turnId: 'turn-9', agentId: 'agent-1', reason: 'answer' })
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
 
-    expect(texts).toContain('done in 1m 20s')
-    expect(texts).toContain('general-purpose · 2 tools')
-    expect(await ui.find({ type: 'Text', text: '● 1 running' })).toBeUndefined()
+    expect(texts).toContain('✓')
+    expect(texts).toContain('found 3 parser bugs · 1:20')
     await ui.unmount()
   })
 })
@@ -414,7 +428,7 @@ const TODOS = Array.from({ length: 12 }, (_, index) => ({
 }))
 
 describe('the task list in the panel', () => {
-  test('lists every task with a bar of its own, and moves the bar of the one in progress', async ($, on) => {
+  test('lists every task by its number, and moves the bar of the one in progress', async ($, on) => {
     const said = world(on)
     await $.turn.start({ text: 'Ship the parser', turnId: 'turn-1' })
     await $.tool.call({ tool: 'TodoWrite', todos: TODOS } as never)
@@ -423,23 +437,25 @@ describe('the task list in the panel', () => {
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ ...PANE, surface })
       const texts = async () => (await ui.findAll({ type: 'Text' })).map(text => text.text)
-      const moving = async () => (await texts()).find(text => /^─*━━━─*$/.test(text))
+      const moving = async () => (await sweeps(ui))[0]
 
-      for (const todo of TODOS) {
-        expect(await texts()).toContain(todo.status === 'in_progress' ? todo.activeForm : todo.content)
+      // The first nine answer to their number, which their row shows; the rest write it.
+      for (const [index, todo] of TODOS.entries()) {
+        const line = todo.status === 'in_progress' ? todo.activeForm : todo.content
+
+        expect(await texts()).toContain(index < 9 ? line : `${index + 1}. ${line}`)
+        expect((await ui.find({ key: `task-main-${index}` }))?.props.hotkey).toBe(index < 9 ? String(index + 1) : undefined)
       }
 
       expect((await texts()).some(text => /more to do|done before/.test(text))).toBe(false)
-      expect((await texts()).filter(text => text === '━━━━━━━━━━').length).toBe(2)
-      expect((await texts()).filter(text => text === '──────────').length).toBe(9)
+      expect((await texts()).filter(text => text === 'queued').length).toBe(9)
+      expect((await sweeps(ui)).length).toBe(1)
 
       const before = await moving()
-      expect(before?.length).toBe(10)
+      expect(before).toMatch(/^█*$/)
 
       await said.clock.advance(250)
-      const after = await moving()
-      expect(after?.length).toBe(10)
-      expect(after).not.toBe(before)
+      expect(await moving()).not.toBe(before)
       await ui.unmount()
     }
 
@@ -447,7 +463,7 @@ describe('the task list in the panel', () => {
     // than that one comes however long the panel then stays away.
     const glance = async () => {
       const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-      const at = (await ui.findAll({ type: 'Text' })).map(text => text.text).find(text => /^─*━━━─*$/.test(text))?.indexOf('━')
+      const at = (await sweeps(ui))[0]?.length
       await ui.unmount()
 
       return at ?? -1
@@ -467,15 +483,44 @@ describe('the task list in the panel', () => {
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     await said.clock.advance(2000)
 
-    expect((await ui.findAll({ type: 'Text' })).some(text => /━━━/.test(text.text))).toBe(false)
+    expect(await sweeps(ui)).toEqual([])
 
     // No frame was counted meanwhile: the first bar to move starts from its first cell.
     await $.tool.call({ tool: 'TodoWrite', todos: TODOS } as never)
-    expect((await ui.findAll({ type: 'Text' })).map(text => text.text)).toContain('━━━───────')
+    expect(await sweeps(ui)).toEqual([''])
     await ui.unmount()
   })
 
-  test('lists a subagent’s own tasks in its card, and turns its mark while it runs', async ($, on) => {
+  test('shows only the tasks a filter lets through, and moves to the next filter on f', async ($, on) => {
+    on('tool.call', { tool: 'Bash' }, () => ({ result: 'boom', text: 'boom', isError: true }))
+    world(on)
+    await $.tool.call({ tool: 'TodoWrite', todos: TODOS.slice(0, 4) } as never)
+    await $.tool.call({ tool: 'Bash', command: 'make' } as never)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const texts = async () => (await ui.findAll({ type: 'Text' })).map(text => text.text)
+
+    expect((await ui.find({ key: 'filter-problems' }))?.props.label).toBe('Problems 1')
+    expect((await ui.find({ key: 'filter-all' }))?.props.variant).toBe('primary')
+    // f presses the filter after the one shown.
+    expect((await ui.find({ key: 'filter-open' }))?.props.hotkey).toBe('f')
+    expect(await texts()).toContain('! 1 problem')
+
+    await ui.press({ key: 'filter-problems' })
+    expect((await ui.find({ key: 'filter-problems' }))?.props.variant).toBe('primary')
+    expect((await ui.find({ key: 'filter-done' }))?.props.hotkey).toBe('f')
+    expect(await ui.find({ key: 'task-main-2' })).toBeDefined()
+    expect(await ui.find({ key: 'task-main-0' })).toBeUndefined()
+
+    await ui.press({ key: 'filter-done' })
+    expect(await ui.find({ key: 'task-main-0' })).toBeDefined()
+    expect(await ui.find({ key: 'task-main-2' })).toBeUndefined()
+    // Past the last, f goes back to all.
+    expect((await ui.find({ key: 'filter-all' }))?.props.hotkey).toBe('f')
+    await ui.unmount()
+  })
+
+  test('lists a subagent’s own tasks after the main thread’s, under its name', async ($, on) => {
     const said = world(on)
     await drain($.turn.step({ ...step, agentId: 'agent-1' }))
     await $.tool.call({
@@ -492,13 +537,15 @@ describe('the task list in the panel', () => {
 
     expect(await texts()).toContain('Read the parser')
     expect(await texts()).toContain('Writing the report')
-    expect(await texts()).toContain('⠋')
-    // On its card, not on the main list.
+    expect(await texts()).toContain('task 2 · 0:00')
+    expect((await ui.find({ key: 'task-agent-1-1' }))?.props.hotkey).toBe('2')
+    // On the queue, not on the main thread's list.
     expect((await $.command.run(typed('progress', ''))).text).toMatch(/: no tasks ·[\s\S]*↳ Review the parser · running · 1 of 2 tasks done\n  ✔ Read the parser\n  ▸ Writing the report$/)
 
+    const before = await sweeps(ui)
+    expect(before.length).toBe(1)
     await said.clock.advance(250)
-    expect(await texts()).toContain('⠙')
-    expect(await texts()).not.toContain('⠋')
+    expect(await sweeps(ui)).not.toEqual(before)
     await ui.unmount()
   })
 
@@ -553,7 +600,6 @@ describe('a task opened from the panel', () => {
       const ui = await $.ui.mount({ ...PANE, surface })
       const texts = async () => (await ui.findAll({ type: 'Text' })).map(text => text.text)
 
-      expect(await texts()).toContain('Press a task, or its number, for its calls, problems and result.')
       expect((await ui.find({ key: 'task-main-2' }))?.props.hotkey).toBe('3')
 
       await ui.press({ key: 'task-main-2' })
@@ -601,7 +647,7 @@ describe('a task opened from the panel', () => {
     await $.tool.call({ tool: 'Bash', command: 'make' } as never)
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-    expect((await ui.findAll({ type: 'Text' })).map(text => text.text)).toContain(' ! 1')
+    expect((await ui.findAll({ type: 'Text' })).map(text => text.text)).toContain('! 1 problem')
 
     await ui.press({ key: 'task-main-2' })
     expect((await ui.find({ key: 'tab-problems' }))?.props.variant).toBe('primary')
@@ -703,7 +749,7 @@ describe('the mod’s own task tool', () => {
     const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
 
     expect(texts.reduce((sum, text) => sum + text.length, 0)).toBeLessThan(30_000)
-    expect(texts).toContain('Doing step 101')
+    expect(texts).toContain('101. Doing step 101')
     expect(texts).toContain('  … 99 done before')
     expect(texts.some(text => /^  … \d+ more to do$/.test(text))).toBe(true)
     await ui.unmount()

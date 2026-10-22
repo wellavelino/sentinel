@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { aimed, asked, bar, carried, changed, checks, cleared, clocked, compact, counts, elapsed, EMPTY, ended, filled, filtered, hasWork, isAsk, isLive, logged, named, nearby, noted, outcome, problems, progress, pulse, queue, reconciled, share, span, spent, spinner, stepped, summary, sweep, tasked, tooled } from '../hooks/lib/board'
+import { aimed, asked, bar, carried, changed, checks, cleared, clocked, compact, counts, elapsed, EMPTY, ended, filled, filtered, hasWork, isAsk, isLive, logged, named, nearby, noted, outcome, problems, progress, queue, reconciled, share, span, spent, stepped, summary, sweep, tasked, tooled } from '../hooks/lib/board'
 
 const USAGE = { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 800 }
 
@@ -299,14 +299,6 @@ describe('sweep', () => {
         expect(`${before}${lit}${after}`.length).toBe(width)
       }
     }
-  })
-})
-
-describe('pulse and spinner', () => {
-  test('give a cell that changes with the frame and comes round again', () => {
-    expect([0, 1, 2, 3, 4].map(pulse)).toEqual(['░', '▒', '▓', '▒', '░'])
-    expect(spinner(0)).not.toBe(spinner(1))
-    expect(spinner(10)).toBe(spinner(0))
   })
 })
 
