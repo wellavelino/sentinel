@@ -191,11 +191,16 @@ async function track(
 }
 
 /** Ends the rows of the agents the engine no longer runs: one whose end the mod never heard of. */
+/** The ids of the agents the engine still runs. */
+async function running($: EngineInterface): Promise<string[]> {
+  return (await $.agent.list())
+    .filter(agent => agent.status !== 'completed' && agent.status !== 'failed' && agent.status !== 'killed')
+    .map(agent => agent.id)
+}
+
 async function settle($: EngineInterface): Promise<void> {
   try {
-    const live = (await $.agent.list())
-      .filter(agent => agent.status !== 'completed' && agent.status !== 'failed' && agent.status !== 'killed')
-      .map(agent => agent.id)
+    const live = await running($)
     const now = await $.clock.now()
 
     await update($, board, held => reconciled(held, live, now))
@@ -454,7 +459,13 @@ export const register: Register = (on, options) => {
         const now = await $.clock.now()
 
         await update($, board, held => ended(held, agentId, e.reason === 'answer' ? 'done' : 'failed', now))
-      } else if (hasReader && e.reason === 'answer' && e.answer.length >= MIN_REVIEWED_REPLY) {
+      } else if (
+        hasReader &&
+        e.reason === 'answer' &&
+        e.answer.length >= MIN_REVIEWED_REPLY &&
+        // While subagents still work, the reply is a plan: the result comes in a later turn.
+        (await running($)).length === 0
+      ) {
         const answer = e.answer
         const said = digestText(digest)
 
