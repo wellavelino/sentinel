@@ -604,23 +604,37 @@ describe('a task opened from the panel', () => {
 
       await ui.press({ key: 'task-main-2' })
       expect(await texts()).toContain('Step 3')
-      expect(await texts()).toContain('task 3 of 4 · main thread')
+      expect(await texts()).toContain('task 3 of 4')
+      expect(await texts()).toContain('In progress · Doing step 3')
+      // What it is, at a glance: its thread, when it started, how long it took, its calls, what it spent.
+      for (const label of ['thread', 'started', 'time', 'tool calls', 'spent']) {
+        expect(await texts()).toContain(label)
+      }
+      expect(await texts()).toContain('0:30')
+      expect(await texts()).toContain('4')
       expect((await ui.find({ key: 'tab-details' }))?.props.variant).toBe('primary')
+      expect(await texts()).toContain('◐ Doing step 3')
       expect(await texts()).toContain('src/parser.ts')
       expect(await texts()).toContain('00:30')
       expect((await texts()).filter(text => text === 'npm test').length).toBe(2)
+      expect(await texts()).toContain('+1 −1')
+      expect(await texts()).toContain('FAIL tests/board.test.ts')
+      expect(await texts()).toContain('b tasks  d p r details · problems · result  k j prev/next')
 
       await ui.press({ key: 'tab-problems' })
       expect((await ui.find({ key: 'tab-problems' }))?.props.label).toBe('Problems 1')
-      expect(await texts()).toContain('fixed later')
+      expect(await texts()).toContain('npm test failed')
+      expect(await texts()).toContain('resolved')
+      expect(await texts()).toContain('Bash · 00:10')
       expect(await texts()).toContain('FAIL tests/board.test.ts\n  1 failed')
+      expect(await texts()).toContain('Went through again at 00:30.')
 
       await ui.press({ key: 'tab-result' })
-      expect(await texts()).toContain('Not done yet: this is what it has come to so far.')
-      expect(await texts()).toContain('1 file changed')
+      expect(await texts()).toContain('No result yet. It appears here when the task is done: summary, files changed, checks.')
 
       await ui.press({ key: 'next' })
-      expect(await texts()).toContain('Not started yet. Its tool calls show here as they run.')
+      expect(await texts()).toContain('Pending · queued after task 3')
+      expect(await texts()).toContain('Not started. Tool calls show here as they happen.')
 
       await ui.press({ key: 'back' })
       expect(await ui.find({ key: 'task-main-0' })).toBeDefined()
@@ -634,9 +648,14 @@ describe('a task opened from the panel', () => {
     } as never)
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const texts = async () => (await ui.findAll({ type: 'Text' })).map(text => text.text)
     await ui.press({ key: 'task-main-2' })
     expect((await ui.find({ key: 'tab-result' }))?.props.variant).toBe('primary')
-    expect((await ui.findAll({ type: 'Text' })).map(text => text.text)).toContain('✔ Done in 30s · 4 calls')
+    expect(await texts()).toContain('Done')
+    expect(await texts()).toContain('FILES')
+    expect(await texts()).toContain('+1')
+    expect(await texts()).toContain('−1')
+    expect(await texts()).toContain('✓ npm test passed')
     await ui.unmount()
   })
 
@@ -651,7 +670,7 @@ describe('a task opened from the panel', () => {
 
     await ui.press({ key: 'task-main-2' })
     expect((await ui.find({ key: 'tab-problems' }))?.props.variant).toBe('primary')
-    expect((await ui.findAll({ type: 'Text' })).map(text => text.text)).toContain('still open')
+    expect((await ui.findAll({ type: 'Text' })).map(text => text.text)).toContain('open')
     await ui.unmount()
   })
 })
