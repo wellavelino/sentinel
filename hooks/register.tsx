@@ -515,8 +515,9 @@ export const register: Register = (on, options) => {
     try {
       if (agentId !== undefined) {
         const now = await $.clock.now()
+        const cwd = await $.session.cwd().catch(() => '')
 
-        await update($, board, held => ended(held, agentId, e.reason === 'answer' ? 'done' : 'failed', now, e.answer))
+        await update($, board, held => ended(held, agentId, e.reason === 'answer' ? 'done' : 'failed', now, e.answer, cwd))
       } else if (
         hasReader &&
         e.reason === 'answer' &&

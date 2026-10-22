@@ -273,12 +273,14 @@ export function stepped(board: Board, agentId: string | undefined, usage: Usage,
 }
 
 /**
- * An agent's run over: how it ended, when, and the first line of what it answered. One never heard
- * of leaves the board as it was.
+ * An agent's run over: how it ended, when, and the first line of what it answered, with the files
+ * under `cwd` it names by their path from there. One never heard of leaves the board as it was.
  */
-export function ended(board: Board, agentId: string, status: 'done' | 'failed', now: number, said = ''): Board {
+export function ended(board: Board, agentId: string, status: 'done' | 'failed', now: number, said = '', cwd = ''): Board {
+  const line = cwd === '' ? headline(said) : headline(said).replaceAll(cwd.endsWith('/') ? cwd : `${cwd}/`, '')
+
   return board.agents.some(agent => agent.id === agentId)
-    ? withAgent(board, agentId, now, agent => ({ ...agent, status, endedAt: now, said: headline(said) || agent.said }))
+    ? withAgent(board, agentId, now, agent => ({ ...agent, status, endedAt: now, said: line || agent.said }))
     : board
 }
 

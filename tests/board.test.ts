@@ -480,6 +480,12 @@ describe('what a task spent', () => {
 
     expect(board.agents[0]).toMatchObject({ status: 'done', said: 'Found 38 refs.' })
   })
+
+  test("names the files a subagent's answer cites by their path from the session's folder", () => {
+    const board = ended(stepped(EMPTY, 'agent-1', USAGE, 0), 'agent-1', 'done', 5, 'One bug in `/repo/src/discount.js:4`, none in /repo/src/cart.js.', '/repo')
+
+    expect(board.agents[0]?.said).toBe('One bug in `src/discount.js:4`, none in src/cart.js.')
+  })
 })
 
 describe('the queue', () => {
