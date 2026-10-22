@@ -191,21 +191,33 @@ async function track(
 }
 
 /** Ends the rows of the agents the engine no longer runs: one whose end the mod never heard of. */
-/** The ids of the agents the engine still runs. */
-async function running($: EngineInterface): Promise<string[]> {
-  return (await $.agent.list())
-    .filter(agent => agent.status !== 'completed' && agent.status !== 'failed' && agent.status !== 'killed')
-    .map(agent => agent.id)
-}
-
 async function settle($: EngineInterface): Promise<void> {
   try {
-    const live = await running($)
+    const live = (await $.agent.list())
+      .filter(agent => agent.status !== 'completed' && agent.status !== 'failed' && agent.status !== 'killed')
+      .map(agent => agent.id)
     const now = await $.clock.now()
 
     await update($, board, held => reconciled(held, live, now))
   } catch {
     // Without the engine's list the rows stay as they are.
+  }
+}
+
+/**
+ * Whether a subagent of this session still works and will report back in a later turn. A teammate
+ * is left out: one idle waits for a message, and one in a pane of its own may never report again.
+ */
+async function isAwaitingAgents($: EngineInterface): Promise<boolean> {
+  try {
+    return (await $.agent.list()).some(
+      agent =>
+        agent.teammateId === undefined &&
+        (agent.status === 'pending' || agent.status === 'running' || agent.status === 'waiting'),
+    )
+  } catch {
+    // Without the engine's list the reply is read, as it was before the mod asked.
+    return false
   }
 }
 
@@ -464,7 +476,7 @@ export const register: Register = (on, options) => {
         e.reason === 'answer' &&
         e.answer.length >= MIN_REVIEWED_REPLY &&
         // While subagents still work, the reply is a plan: the result comes in a later turn.
-        (await running($)).length === 0
+        !(await isAwaitingAgents($))
       ) {
         const answer = e.answer
         const said = digestText(digest)
