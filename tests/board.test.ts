@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { aimed, asked, bar, carried, cleared, compact, elapsed, EMPTY, ended, filled, hasWork, isAsk, isLive, logged, named, nearby, noted, outcome, problems, progress, pulse, reconciled, share, spent, spinner, stepped, summary, sweep, tasked, tooled } from '../hooks/lib/board'
+import { aimed, asked, bar, carried, changed, checks, cleared, clocked, compact, counts, elapsed, EMPTY, ended, filled, filtered, hasWork, isAsk, isLive, logged, named, nearby, noted, outcome, problems, progress, pulse, queue, reconciled, share, span, spent, spinner, stepped, summary, sweep, tasked, tooled } from '../hooks/lib/board'
 
 const USAGE = { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 800 }
 
@@ -407,7 +407,109 @@ describe('what a task heard of', () => {
       ],
     }
 
-    expect(problems(task).map(problem => [problem.what, problem.isFixed])).toEqual([['npm test', true], ['make', false]])
-    expect(outcome(task)).toEqual({ files: ['a.ts', 'b.ts'], commands: 3, fixed: 1, open: 1 })
+    expect(problems(task).map(problem => [problem.what, problem.isFixed, problem.fixedAt])).toEqual([['npm test', true, 4], ['make', false, undefined]])
+    expect(outcome(task)).toEqual({
+      files: [
+        { path: 'a.ts', added: 0, removed: 0 },
+        { path: 'b.ts', added: 0, removed: 0 },
+      ],
+      commands: 3,
+      fixed: 1,
+      open: 1,
+    })
+  })
+})
+
+describe('what a task changed and checked', () => {
+  test('counts the lines an edit adds and removes', () => {
+    expect(changed('Edit', { file_path: 'a.ts', old_string: 'a\nb', new_string: 'a\nb\nc' })).toEqual({ added: 3, removed: 2 })
+    expect(changed('MultiEdit', { edits: [{ old_string: 'a', new_string: 'b\nc' }, { old_string: 'x\ny', new_string: '' }] })).toEqual({ added: 2, removed: 3 })
+    expect(changed('Write', { content: 'one\ntwo\n' })).toEqual({ added: 2, removed: 0 })
+    expect(changed('NotebookEdit', { new_source: 'print(1)' })).toEqual({ added: 1, removed: 0 })
+    expect(changed('Bash', { command: 'ls' })).toBeUndefined()
+    expect(changed('Edit', {})).toEqual({ added: 0, removed: 0 })
+  })
+
+  test('adds up the lines each file took, and says how the last command went', () => {
+    const task = {
+      id: '0',
+      subject: 'Fix',
+      status: 'completed' as const,
+      calls: [
+        { at: 1, tool: 'Edit', what: 'a.ts', lines: { added: 4, removed: 1 } },
+        { at: 2, tool: 'Bash', what: 'npm test', error: 'FAIL' },
+        { at: 3, tool: 'Edit', what: 'a.ts', lines: { added: 2, removed: 2 } },
+        { at: 4, tool: 'Write', what: 'b.ts', lines: { added: 9, removed: 0 } },
+        { at: 5, tool: 'Bash', what: 'npm test' },
+      ],
+    }
+
+    expect(outcome(task).files).toEqual([
+      { path: 'a.ts', added: 6, removed: 3 },
+      { path: 'b.ts', added: 9, removed: 0 },
+    ])
+    expect(checks(task)).toBe('✓ npm test passed')
+    expect(checks({ ...task, calls: task.calls.slice(0, 2) })).toBe('✕ npm test failed')
+    expect(checks({ ...task, calls: [] })).toBe('')
+  })
+})
+
+describe('what a task spent', () => {
+  test('books each request on the task in progress where it was made, and keeps it across a rebuilt list', () => {
+    const todos = (statuses: string[]) => statuses.map((status, index) => ({ content: `Step ${index + 1}`, status, activeForm: `Doing ${index + 1}` }))
+    let board = tooled(EMPTY, undefined, 'TodoWrite', { todos: todos(['in_progress', 'pending']) }, {}, 0)
+    board = stepped(board, undefined, USAGE, 1)
+    board = stepped(board, undefined, USAGE, 2)
+    board = tooled(board, undefined, 'TodoWrite', { todos: todos(['completed', 'in_progress']) }, {}, 3)
+
+    expect(board.tasks.map(task => task.spent)).toEqual([2 * spent(USAGE), undefined])
+  })
+
+  test('keeps what a subagent said last when its run ends', () => {
+    const board = ended(stepped(EMPTY, 'agent-1', USAGE, 0), 'agent-1', 'done', 5, '  Found 38 refs.\nMore below.')
+
+    expect(board.agents[0]).toMatchObject({ status: 'done', said: 'Found 38 refs.' })
+  })
+})
+
+describe('the queue', () => {
+  const todos = (statuses: string[], name: string) =>
+    statuses.map((status, index) => ({ content: `${name} ${index + 1}`, status, activeForm: `Doing ${name} ${index + 1}` }))
+  let board = tooled(EMPTY, undefined, 'TodoWrite', { todos: todos(['completed', 'in_progress', 'pending'], 'main') }, {}, 1000)
+  board = named(stepped(board, 'agent-1', USAGE, 0), 'agent-1', 'Clean up', 'general-purpose')
+  board = tooled(board, 'agent-1', 'TodoWrite', { todos: todos(['completed'], 'clean') }, {}, 500)
+  board = logged(board, undefined, { at: 1200, tool: 'Bash', what: 'make', error: 'boom' })
+
+  test('numbers every thread’s tasks in one list, the main thread first', () => {
+    expect(queue(board).map(entry => [entry.n, entry.task.subject, entry.thread.id, entry.thread.label, entry.at])).toEqual([
+      [1, 'main 1', 'main', 'main', 0],
+      [2, 'main 2', 'main', 'main', 1],
+      [3, 'main 3', 'main', 'main', 2],
+      [4, 'clean 1', 'agent-1', 'Clean up', 0],
+    ])
+  })
+
+  test('filters it to the open, the troubled or the done, and counts each', () => {
+    const all = queue(board)
+
+    expect(filtered(all, 'all')).toEqual(all)
+    expect(filtered(all, 'open').map(entry => entry.n)).toEqual([2, 3])
+    expect(filtered(all, 'problems').map(entry => entry.n)).toEqual([2])
+    expect(filtered(all, 'done').map(entry => entry.n)).toEqual([1, 4])
+    expect(counts(all)).toEqual({ all: 4, open: 2, problems: 1, done: 2 })
+  })
+
+  test('times the whole of it from its first start, to now while it runs', () => {
+    expect(span(board, 4000)).toBe(3500)
+    expect(span(EMPTY, 4000)).toBe(0)
+
+    const done = tooled(board, undefined, 'TodoWrite', { todos: todos(['completed', 'completed', 'completed'], 'main') }, {}, 3000)
+    expect(span(ended(done, 'agent-1', 'done', 3000), 9000)).toBe(2500)
+  })
+})
+
+describe('clocked', () => {
+  test('writes a stretch of time as a clock does', () => {
+    expect([0, 42_000, 185_000, 3_730_000].map(clocked)).toEqual(['0:00', '0:42', '3:05', '1:02:10'])
   })
 })

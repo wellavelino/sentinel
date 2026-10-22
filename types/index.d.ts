@@ -18,6 +18,8 @@ export type Task = {
   calls?: Call[]
   /** The last thing Claude wrote while it was in progress. */
   note?: string
+  /** What the model requests made while it was in progress spent, in input-token equivalents. */
+  spent?: number
 }
 
 /** One tool call a task made: what it acted on and, when it failed, what it said. */
@@ -30,13 +32,20 @@ export type Call = {
   error?: string
   /** The subagent that made it, when one did. */
   by?: string
+  /** The lines it added to and removed from a file, as its input tells them, when it wrote one. */
+  lines?: { added: number; removed: number }
 }
 
 /** Which task the panel has open (`<thread>:<id>`, the thread `main` or an agent's id), and on which tab. */
 export type View = {
   task: string | null
   tab: 'details' | 'problems' | 'result'
+  /** Which tasks the list shows. */
+  filter?: Filter
 }
+
+/** The tasks a list shows: all, those not done, those with a problem still open, those done. */
+export type Filter = 'all' | 'open' | 'problems' | 'done'
 
 /** One subagent as the progress band follows it. */
 export type AgentRow = {
@@ -55,6 +64,8 @@ export type AgentRow = {
   /** When it was first heard of and when it ended, in milliseconds of the session's clock. */
   startedAt: number
   endedAt?: number
+  /** The first line of what it answered when its run ended. */
+  said?: string
 }
 
 /** What the progress band draws: the goal, the main thread's tasks and use, and each subagent's. */

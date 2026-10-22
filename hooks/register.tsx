@@ -1053,7 +1053,7 @@ export const register: Register = (on, options) => {
               {came.files.length === 0 ? 'No files changed' : `${came.files.length} file${came.files.length === 1 ? '' : 's'} changed`}
             </Text>
             {came.files.map(file => (
-              <Text wrap="truncate-middle">  {file}</Text>
+              <Text wrap="truncate-middle">  {file.path}</Text>
             ))}
           </Box>
           <Box marginTop={1}>
