@@ -635,20 +635,31 @@ export function fit(text: string, width: number): string {
 const CHECK = /\b(test|tests|spec|lint|check|typecheck|tsc|build|verify|vitest|jest|pytest|eslint|biome|ruff|mypy|clippy)\b/
 
 /** How the last check a task ran went: `✓ npm test passed`, or nothing where it ran none. */
+// Commands that only look at files or move about: `cat test/a.test.js` or `ls tests` names tests and runs none.
+const LOOK = /^(ls|cat|head|tail|less|more|grep|rg|find|fd|tree|stat|file|wc|sed|awk|echo|printf|cd|pwd|git|diff|which|type)$/
+
+// A part of a command line is a check when it names one and does more than look.
+const isCheck = (part: string) => CHECK.test(part) && !LOOK.test(part.trim().split(/\s+/)[0] ?? '')
+
+// The command line's parts, each with the operator after it: `cd x && npm test 2>&1 | tail` holds `npm test`, then `|`.
+const piecesOf = (line: string) => line.split(/\s*(&&|\|\||;|\|)\s*/)
+
 export function checks(task: Task): string {
-  const last = (task.calls ?? []).findLast(call => call.tool === 'Bash' && CHECK.test(call.what))
+  const last = (task.calls ?? []).findLast(call =>
+    call.tool === 'Bash' && piecesOf(call.what).some((part, i) => i % 2 === 0 && isCheck(part)))
 
   if (last === undefined) {
     return ''
   }
 
-  // The part of the command line that checks, without its redirections: `cd x && npm test 2>&1 | tail` is `npm test`.
-  const named =
-    last.what
-      .split(/\s*(?:&&|\|\||;|\|)\s*/)
-      .find(part => CHECK.test(part))
-      ?.replace(/\s*\d*>&?\s*\S+/g, '')
-      .trim() || last.what
+  const pieces = piecesOf(last.what)
+  const at = pieces.findIndex((part, i) => i % 2 === 0 && isCheck(part))
+  const named = (pieces[at] ?? '').replace(/\s*\d*>&?\s*\S+/g, '').trim() || last.what
+
+  // Only `&&` after it keeps the check's exit code as the line's; a pipe, `||` or `;` gives the line another's.
+  if (at >= 0 && pieces.slice(at + 1).some((part, i) => i % 2 === 0 && part !== '&&')) {
+    return `• ${named} ran`
+  }
 
   return last.error === undefined ? `✓ ${named} passed` : `✕ ${named} failed`
 }

@@ -446,8 +446,17 @@ describe('what a task changed and checked', () => {
     // A command that checks nothing is not a check.
     expect(checks({ ...task, calls: [...task.calls, { at: 6, tool: 'Bash', what: 'git status' }] })).toBe('✓ npm test passed')
     expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'git status' }] })).toBe('')
+    // A command that only looks at tests, or at a build, is not a check either.
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cat src/discount.js; ls test* tests 2>/dev/null' }] })).toBe('')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cat test/cart.test.js && git diff build/' }] })).toBe('')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'ls tests && pytest -q' }] })).toBe('✓ pytest -q passed')
     // It names the check itself, not the plumbing around it.
-    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cd /repo && npm test 2>&1 | tail -n 12' }] })).toBe('✓ npm test passed')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cd /repo && npm test 2>&1 && git status' }] })).toBe('✓ npm test passed')
+    // Piped into another command, or followed by one whatever it did, the exit code is not the check's: it ran, and how it went is not known.
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cd /repo && npm test 2>&1 | tail -n 12' }] })).toBe('• npm test ran')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'npm test | tail', error: 'Exit code 1' }] })).toBe('• npm test ran')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'npm test || echo flaky' }] })).toBe('• npm test ran')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'npm test; echo done' }] })).toBe('• npm test ran')
   })
 })
 

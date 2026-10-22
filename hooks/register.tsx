@@ -98,16 +98,18 @@ const INK_TEXT = '#141414'
 
 const OWN_TASKS = new RegExp(`^${TASKS_TOOL}$`)
 
-// What Claude is asked to keep a list with, by the task tool the request offers it.
-const LIST_TOOLS: [string, string][] = [
-  ['TodoWrite', 'TodoWrite'],
-  ['TaskCreate', 'TaskCreate, and TaskUpdate as each one starts and ends'],
-  [TASKS_TOOL, TASKS_TOOL],
+// The task tool the request offers, what Claude opens a list with, and what it keeps the list with.
+const LIST_TOOLS: [string, string, string][] = [
+  ['TodoWrite', 'TodoWrite with every step as a task', 'TodoWrite'],
+  ['TaskCreate', 'TaskCreate, once a step', 'TaskUpdate'],
+  [TASKS_TOOL, `${TASKS_TOOL} with every step as a task`, TASKS_TOOL],
 ]
 
 // The section that has Claude break work into tasks even when nobody asked for a list.
-const breakdown = (tool: string) =>
-  `# Task list\nWhen a request needs three or more distinct steps, write its task list with ${tool} before you start: one task a step, named for what it delivers. Keep exactly one in progress at a time, mark each completed as soon as it is done, and add a task when you find more work. The person follows the list in a progress panel. A request of one or two steps needs no list.`
+// Asked only to "write a list before you start", a model skipped it: it is told what its first call is.
+// Asked to keep one in progress, it marked two steps done in one call: it is told to update each step.
+const breakdown = ([, first, keep]: [string, string, string]) =>
+  `# Task list\nThe person follows your work as a task list in a progress panel, so keep one. When a request needs three or more distinct steps (for example: write a test, run it, fix the code, run it again), your first tool call is ${first}, before you read, edit or run anything. Then, with ${keep}, work one task at a time: mark it in progress as you start it and completed as soon as it is done, never two steps in one update, so each step's tool calls are booked on it. Add a task when you find more work. Only a request of one or two steps goes without a list.`
 
 // The task tool the model is given where Claude Code has none of its own, as the model reads it.
 const TASKS_SPEC = {
@@ -378,7 +380,7 @@ export const register: Register = (on, options) => {
     }
 
     // A subagent's request is composed here too, with the tools it has.
-    const tool = isBreakingDown ? LIST_TOOLS.find(([name]) => e.tools.includes(name))?.[1] : undefined
+    const tool = isBreakingDown ? LIST_TOOLS.find(([name]) => e.tools.includes(name)) : undefined
 
     return {
       sections: [
@@ -984,7 +986,11 @@ export const register: Register = (on, options) => {
             {came.files.length === 0 && <Text dimColor>No files changed.</Text>}
             {checked !== '' && (
               <Box marginTop={1}>
-                <Text color={checked.startsWith('✓') ? 'success' : 'error'}>{checked}</Text>
+                {checked.startsWith('•') ? (
+                  <Text dimColor>{checked}</Text>
+                ) : (
+                  <Text color={checked.startsWith('✓') ? 'success' : 'error'}>{checked}</Text>
+                )}
               </Box>
             )}
           </Box>
@@ -1079,7 +1085,7 @@ export const register: Register = (on, options) => {
       const isRunning = task.status === 'in_progress'
       const open = problems(task).filter(problem => !problem.isFixed).length
       const files = outcome(task).files.length
-      const checked = checks(task).replace(/^✓ /, '')
+      const checked = checks(task).replace(/^[✓•] /, '')
       const line = isRunning ? task.active || task.subject : task.subject
       const when =
         task.status === 'pending'

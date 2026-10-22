@@ -729,6 +729,27 @@ describe('a task opened from the panel', () => {
     await ui.unmount()
   })
 
+  test('draws a check whose exit code a pipe took as one that ran, not one that passed', async ($, on) => {
+    world(on)
+    await $.tool.call({ tool: 'TodoWrite', todos: TODOS.slice(0, 3) } as never)
+    await $.tool.call({ tool: 'Bash', command: 'node --test 2>&1 | tail -40' } as never)
+    await $.tool.call({
+      tool: 'TodoWrite',
+      todos: TODOS.slice(0, 3).map((todo, index) => (index === 2 ? { ...todo, status: 'completed' } : todo)),
+    } as never)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const texts = async () => (await ui.findAll({ type: 'Text' })).map(text => text.text)
+    expect((await texts()).some(text => text.includes('node --test ran') && !text.includes('•'))).toBe(true)
+
+    await ui.press({ key: 'task-main-2' })
+    const ran = (await ui.findAll({ type: 'Text' })).find(text => text.text === '• node --test ran')
+    expect(ran?.props.color).toBeUndefined()
+    expect(ran?.props.dimColor).toBe(true)
+    expect(await texts()).not.toContain('✓ node --test passed')
+    await ui.unmount()
+  })
+
   test('opens on its problems while one is still open, and marks its row', async ($, on) => {
     on('tool.call', { tool: 'Bash' }, () => ({ result: 'boom', text: 'boom', isError: true }))
     world(on)

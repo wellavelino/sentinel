@@ -142,7 +142,7 @@ describe('the highlighter', () => {
 
       expect(todo?.scope).toBe('session')
       expect(todo?.text).toMatch(/three or more/)
-      expect(todo?.text).toMatch(/before you start/)
+      expect(todo?.text).toMatch(/your first tool call is TodoWrite/)
       expect(todo?.text).toMatch(/one .*in progress/i)
       expect(todo?.text).toContain('TodoWrite')
       expect(created?.text).toContain('TaskCreate')
