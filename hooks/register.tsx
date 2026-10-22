@@ -473,6 +473,11 @@ export const register: Register = (on, options) => {
   // The progress band ---------------------------------------------------------------------
 
   on('turn.start', async ($, e, next) => {
+    // A subagent's run begins with the Agent call's prompt, not the person's.
+    if (e.agentId !== undefined) {
+      return next(e)
+    }
+
     // A turn the engine starts (an agent reporting back) carries on the same piece of work.
     if (isAsk(e.text)) {
       digest = NO_CALLS

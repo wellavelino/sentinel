@@ -194,6 +194,20 @@ describe('the progress band', () => {
     await ui.unmount()
   })
 
+  test("keeps the person's prompt as the work when a subagent's run starts", async ($, on) => {
+    world(on)
+    await $.turn.start({ text: 'Fix the flaky login test', turnId: 'turn-1' })
+    await $.turn.start({ text: 'In this repo, list what the tests do not cover', turnId: 'turn-2', agentId: 'agent-1' })
+    await $.tool.call({ tool: 'TaskCreate', subject: 'Reproduce', description: 'x' })
+
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
+
+    expect(texts).toContain('Fix the flaky login test')
+    expect(texts.some(text => /tests do not cover/.test(text))).toBe(false)
+    await ui.unmount()
+  })
+
   test('gives each subagent a row: what it does, its context and its share of the use', async ($, on) => {
     world(on)
     await $.turn.start({ text: 'Review the parser', turnId: 'turn-1' })
