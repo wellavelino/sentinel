@@ -164,6 +164,40 @@ describe('the highlighter', () => {
       expect(await sectioned($, ['TodoWrite'])).toBeUndefined()
     })
 
+    // A subagent's system prompt is its definition's, composed without `prompt.compose`: the task it is given asks instead.
+    const spawned = async ($: Engine, on: On, spawn: { fork?: boolean } = {}, surfaces: readonly ('terminal' | 'desktop')[] = ['terminal']) => {
+      let given = ''
+      on('session.surfaces', () => ({ value: surfaces }))
+      on('agent.spawn', (_, e) => {
+        given = e.prompt
+        return { model: 'test', agentId: 'a1' }
+      })
+      await $.agent.spawn({ prompt: 'Add a test for an empty cart and run it.', ...spawn } as never)
+      return given
+    }
+
+    test('asks a subagent to break its work into a list, in the task it is given', async ($, on) => {
+      const given = await spawned($, on)
+
+      expect(given.startsWith('Add a test for an empty cart and run it.')).toBe(true)
+      expect(given).toMatch(/three or more/)
+      expect(given).toMatch(/your first tool call/)
+      expect(given).toContain('mcp__sentinel__tasks')
+      expect(given).toContain('TodoWrite')
+    })
+
+    test('leaves a subagent’s task as it was when turned off', { options: { breakdown: 'off' } }, async ($, on) => {
+      expect(await spawned($, on)).toBe('Add a test for an empty cart and run it.')
+    })
+
+    test('leaves a fork’s task as it was: it carries the session’s prompt', async ($, on) => {
+      expect(await spawned($, on, { fork: true })).toBe('Add a test for an empty cart and run it.')
+    })
+
+    test('leaves a headless subagent’s task as it was', async ($, on) => {
+      expect(await spawned($, on, {}, [])).toBe('Add a test for an empty cart and run it.')
+    })
+
     test('keeps the highlighter’s section beside it', { options: { highlight: 'claude' } }, async ($, on) => {
       on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are helpful.', scope: 'shared' }] }))
       const composed = await $.prompt.compose({ ...ask, tools: ['TodoWrite'] })

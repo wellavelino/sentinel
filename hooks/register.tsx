@@ -105,6 +105,9 @@ const LIST_TOOLS: [string, string, string][] = [
   [TASKS_TOOL, `${TASKS_TOOL} with every step as a task`, TASKS_TOOL],
 ]
 
+// What a subagent's task adds for the same, since its system prompt has no room for the section.
+const SUBAGENT_BREAKDOWN = `# Task list\nThe person follows your work as a task list in a progress panel. When this task needs three or more distinct steps, your first tool call is a task list with every step as a task, made with the task tool you have (${TASKS_TOOL}, TodoWrite, or TaskCreate then TaskUpdate), before you read, edit or run anything. Then work one task at a time: mark it in progress as you start it and completed as soon as it is done, never two steps in one update. Add a task when you find more work.`
+
 // The section that has Claude break work into tasks even when nobody asked for a list.
 // Asked only to "write a list before you start", a model skipped it: it is told what its first call is.
 // Asked to keep one in progress, it marked two steps done in one call: it is told to update each step.
@@ -389,6 +392,17 @@ export const register: Register = (on, options) => {
         ...(hasMarks ? [{ id: 'sentinel:highlight', text: INSTRUCTION, scope: 'session' as const }] : []),
       ],
     }
+  })
+
+  // A subagent's system prompt is its definition's, composed without the hook above, and which task tool it has is
+  // not known when it starts: the task it is given asks for the list, naming each tool it may have. A fork carries
+  // the session's prompt.
+  on('agent.spawn', async ($, e, next) => {
+    if (!isBreakingDown || e.fork || (await $.session.surfaces()).length === 0) {
+      return next(e)
+    }
+
+    return next({ ...e, prompt: `${e.prompt}\n\n${SUBAGENT_BREAKDOWN}` })
   })
 
   on('command.run', { command: 'highlight' }, async ($, e) => {
