@@ -79,6 +79,16 @@
       ],
       "default": "auto"
     },
+    "breakdown": {
+      "type": "string",
+      "title": "Break work into tasks",
+      "description": "on: a short section of the system prompt asks Claude, and each subagent that has a task list tool, to write a task list before work of three or more steps and keep it as it goes, so the panel and the band show the work even when you did not ask for a list. off: Claude keeps a list only when it decides to.",
+      "options": [
+        "on",
+        "off"
+      ],
+      "default": "on"
+    },
     "tasks": {
       "type": "string",
       "title": "Task list tool",

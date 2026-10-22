@@ -98,6 +98,17 @@ const INK_TEXT = '#141414'
 
 const OWN_TASKS = new RegExp(`^${TASKS_TOOL}$`)
 
+// What Claude is asked to keep a list with, by the task tool the request offers it.
+const LIST_TOOLS: [string, string][] = [
+  ['TodoWrite', 'TodoWrite'],
+  ['TaskCreate', 'TaskCreate, and TaskUpdate as each one starts and ends'],
+  [TASKS_TOOL, TASKS_TOOL],
+]
+
+// The section that has Claude break work into tasks even when nobody asked for a list.
+const breakdown = (tool: string) =>
+  `# Task list\nWhen a request needs three or more distinct steps, write its task list with ${tool} before you start: one task a step, named for what it delivers. Keep exactly one in progress at a time, mark each completed as soon as it is done, and add a task when you find more work. The person follows the list in a progress panel. A request of one or two steps needs no list.`
+
 // The task tool the model is given where Claude Code has none of its own, as the model reads it.
 const TASKS_SPEC = {
   name: 'tasks',
@@ -288,6 +299,7 @@ export const register: Register = (on, options) => {
   const hasBand = String(options.band ?? 'on') !== 'off'
   const isAuto = String(options.panel ?? 'auto') !== 'manual'
   const hasTasks = String(options.tasks ?? 'auto') !== 'off'
+  const isBreakingDown = String(options.breakdown ?? 'on') !== 'off'
   const reader = String(options.reader ?? 'fast')
   const readerModel = String(options.readerModel ?? 'haiku') || 'haiku'
   // The tool calls since the person last asked, for a reader that cannot see them.
@@ -360,15 +372,19 @@ export const register: Register = (on, options) => {
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
 
-    // Where nothing draws the reply (a headless run), the marks would reach a reader raw.
-    if (!hasMarks || e.surfaces.length === 0) {
+    // Where nothing draws the reply (a headless run), the marks would reach a reader raw, and nobody watches the list.
+    if (e.surfaces.length === 0) {
       return composed
     }
+
+    // A subagent's request is composed here too, with the tools it has.
+    const tool = isBreakingDown ? LIST_TOOLS.find(([name]) => e.tools.includes(name))?.[1] : undefined
 
     return {
       sections: [
         ...composed.sections,
-        { id: 'sentinel:highlight', text: INSTRUCTION, scope: 'session' },
+        ...(tool === undefined ? [] : [{ id: 'sentinel:tasks', text: breakdown(tool), scope: 'session' as const }]),
+        ...(hasMarks ? [{ id: 'sentinel:highlight', text: INSTRUCTION, scope: 'session' as const }] : []),
       ],
     }
   })

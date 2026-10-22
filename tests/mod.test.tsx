@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 const SURFACES = ['terminal', 'desktop'] as const
@@ -126,6 +127,49 @@ describe('the highlighter', () => {
     const composed = await $.prompt.compose({ model: 'test', promptModel: 'test', tools: [], outputStyle: null, traits: [], surfaces: ['terminal'] })
 
     expect(composed.sections.map(section => section.id)).toEqual(['intro'])
+  })
+
+  describe('the task list by default', () => {
+    const ask = { model: 'test', promptModel: 'test', outputStyle: null, traits: [], surfaces: ['terminal'] as const }
+    const sectioned = async ($: Engine, tools: string[], surfaces: readonly ('terminal' | 'desktop')[] = ['terminal']) =>
+      (await $.prompt.compose({ ...ask, tools, surfaces })).sections.find(section => section.id === 'sentinel:tasks')
+
+    test('asks Claude to break work of three or more steps into a list, with the task tool it has', async ($, on) => {
+      on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are helpful.', scope: 'shared' }] }))
+      const todo = await sectioned($, ['Bash', 'TodoWrite'])
+      const created = await sectioned($, ['TaskCreate', 'TaskUpdate'])
+      const own = await sectioned($, ['mcp__sentinel__tasks'])
+
+      expect(todo?.scope).toBe('session')
+      expect(todo?.text).toMatch(/three or more/)
+      expect(todo?.text).toMatch(/before you start/)
+      expect(todo?.text).toMatch(/one .*in progress/i)
+      expect(todo?.text).toContain('TodoWrite')
+      expect(created?.text).toContain('TaskCreate')
+      expect(created?.text).toContain('TaskUpdate')
+      expect(created?.text).not.toContain('TodoWrite')
+      expect(own?.text).toContain('mcp__sentinel__tasks')
+    })
+
+    test('asks for no list where the request has no task tool or nothing draws it', async ($, on) => {
+      on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are helpful.', scope: 'shared' }] }))
+
+      expect(await sectioned($, ['Bash', 'Read'])).toBeUndefined()
+      expect(await sectioned($, ['TodoWrite'], [])).toBeUndefined()
+    })
+
+    test('asks for no list when turned off', { options: { breakdown: 'off' } }, async ($, on) => {
+      on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are helpful.', scope: 'shared' }] }))
+
+      expect(await sectioned($, ['TodoWrite'])).toBeUndefined()
+    })
+
+    test('keeps the highlighter’s section beside it', { options: { highlight: 'claude' } }, async ($, on) => {
+      on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are helpful.', scope: 'shared' }] }))
+      const composed = await $.prompt.compose({ ...ask, tools: ['TodoWrite'] })
+
+      expect(composed.sections.map(section => section.id)).toEqual(['intro', 'sentinel:tasks', 'sentinel:highlight'])
+    })
   })
 
   test('says so when there is nothing selected to highlight', async ($, on) => {

@@ -82,6 +82,8 @@ A task opens on its problems while one is still open, on its result once done, o
 
 What moves is redrawn four times a second, and only while the panel is on screen and something is in progress. Claude keeps a task list for work with several steps: with none, the Goal card says so.
 
+**Work is broken into tasks by default.** A short section of the system prompt (about 80 words) asks Claude to write a task list before any request of three or more distinct steps, keep one task in progress, and mark each done as it goes, with whichever task tool the request has. Subagents that have one get the same section. You don't have to ask for a plan to see the work laid out. Set **Break work into tasks** to `off` in `/config` and Claude keeps a list only when it decides to.
+
 **Where the tasks come from.** Claude Code's own task tools (`TodoWrite`, or `TaskCreate` and `TaskUpdate`) where the session's model has them. Where it has none, the mod gives the model one of its own, `mcp__sentinel__tasks`, which only keeps the list for the panel and the band: about 150 tokens of tool description in the prompt, and one short tool call each time a step starts or ends. It needs no permission prompt. Set **Task list tool** to `off` in `/config` to leave it out.
 
 The band above the prompt shows the same in one line per thread; it appears once there is a goal, a task list or a subagent, and can be turned off.
@@ -98,6 +100,7 @@ The band above the prompt shows the same in one line per thread; it appears once
 | Second reader model | a model alias or id, used by `fast` | `haiku` |
 | Progress band | `on`, `off` | `on` |
 | Panel | `auto` (opens for a new subagent), `manual` (opens on `/progress` only) | `auto` |
+| Break work into tasks | `on` (Claude writes a task list before work of three or more steps), `off` | `on` |
 | Task list tool | `auto` (the model gets the mod's task tool where Claude Code gives it none), `off` | `auto` |
 
 ## Good to know
@@ -105,7 +108,7 @@ The band above the prompt shows the same in one line per thread; it appears once
 - **Your data stays where it is.** The mod makes no network call of its own and writes no file. Marks and the board live in the session's memory and go with it. The second reader is a model call through your own Claude Code session, like any other.
 - **The figures are measurements and estimates.** Context is what the main thread's last model request held, against its window. What a task "spent" is the tokens its model requests used while it was in progress, weighed the way the API prices one kind against another (output five times an input token, a cache write one and a quarter, a cache read a tenth). It does not know that one model costs more than another, so read it as a measure of the work, not of the bill. A goal stays on the board until you clear it with `/goal clear`.
 - **The second reader can be wrong.** The fast one sees the reply and a count of tool calls, not their output. Read its line as a prompt to check, not as a finding. Its marks are drawn only where the reply shows the phrase word for word, as whole words, on one line.
-- **The `claude` highlighter adds one short section to the system prompt** (about 120 words) asking for `==marks==`. No other setting touches the prompt. Where nothing draws the reply (`claude -p`), the section is not sent.
+- **Two settings add a short section to the system prompt.** The `claude` highlighter adds about 120 words asking for `==marks==`. **Break work into tasks**, on by default, adds about 80 asking for a task list, and only when the request offers a task tool. Where nothing draws the reply (`claude -p`), neither is sent.
 - **A paragraph that holds a mark is drawn by the mod**, line by line as the reply wrote it, with its bold, italics, inline code, list markers and links (a link's address is shown beside its label); code blocks, tables and every other paragraph stay the engine's own drawing. A `==mark==` inside a table cell is drawn bold instead, and your own pens do not reach into code blocks or tables.
 - Works on every surface that draws mods; built and tried in the terminal.
 
