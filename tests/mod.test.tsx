@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 const SURFACES = ['terminal', 'desktop'] as const
@@ -128,6 +129,91 @@ describe('the highlighter', () => {
     expect(composed.sections.map(section => section.id)).toEqual(['intro'])
   })
 
+  describe('the task list by default', () => {
+    const ask = { model: 'test', promptModel: 'test', outputStyle: null, traits: [], surfaces: ['terminal'] as const }
+    const sectioned = async ($: Engine, tools: string[], surfaces: readonly ('terminal' | 'desktop')[] = ['terminal']) =>
+      (await $.prompt.compose({ ...ask, tools, surfaces })).sections.find(section => section.id === 'sentinel:tasks')
+
+    test('asks Claude to break work of three or more steps into a list, with the task tool it has', async ($, on) => {
+      on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are helpful.', scope: 'shared' }] }))
+      const todo = await sectioned($, ['Bash', 'TodoWrite'])
+      const created = await sectioned($, ['TaskCreate', 'TaskUpdate'])
+      const own = await sectioned($, ['mcp__sentinel__tasks'])
+
+      expect(todo?.scope).toBe('session')
+      expect(todo?.text).toMatch(/three or more/)
+      expect(todo?.text).toMatch(/your first tool call is TodoWrite/)
+      expect(todo?.text).toMatch(/one .*in progress/i)
+      expect(todo?.text).toContain('TodoWrite')
+      expect(created?.text).toContain('TaskCreate')
+      expect(created?.text).toContain('TaskUpdate')
+      expect(created?.text).not.toContain('TodoWrite')
+      expect(own?.text).toContain('mcp__sentinel__tasks')
+    })
+
+    test('asks for no list where the request has no task tool or nothing draws it', async ($, on) => {
+      on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are helpful.', scope: 'shared' }] }))
+
+      expect(await sectioned($, ['Bash', 'Read'])).toBeUndefined()
+      expect(await sectioned($, ['TodoWrite'], [])).toBeUndefined()
+    })
+
+    test('asks for no list when turned off', { options: { breakdown: 'off' } }, async ($, on) => {
+      on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are helpful.', scope: 'shared' }] }))
+
+      expect(await sectioned($, ['TodoWrite'])).toBeUndefined()
+    })
+
+    // A subagent's system prompt is its definition's, composed without `prompt.compose`: the task it is given asks instead.
+    const spawned = async ($: Engine, on: On, spawn: { fork?: boolean } = {}, surfaces: readonly ('terminal' | 'desktop')[] = ['terminal']) => {
+      let given = ''
+      on('session.surfaces', () => ({ value: surfaces }))
+      on('agent.spawn', (_, e) => {
+        given = e.prompt
+        return { model: 'test', agentId: 'a1' }
+      })
+      await $.agent.spawn({ prompt: 'Add a test for an empty cart and run it.', ...spawn } as never)
+      return given
+    }
+
+    test('asks a subagent to break its work into a list, in the task it is given', async ($, on) => {
+      const given = await spawned($, on)
+
+      expect(given.startsWith('Add a test for an empty cart and run it.')).toBe(true)
+      expect(given).toMatch(/three or more/)
+      expect(given).toMatch(/your first tool call/)
+      expect(given).toContain('mcp__sentinel__tasks')
+      expect(given).toContain('TodoWrite')
+    })
+
+    test('names only the task tools a subagent may have, and lets one with none go without', { options: { tasks: 'off' } }, async ($, on) => {
+      const given = await spawned($, on)
+
+      expect(given).toContain('TodoWrite')
+      expect(given).not.toContain('mcp__sentinel__tasks')
+      expect(given).toMatch(/none of these/)
+    })
+
+    test('leaves a subagent’s task as it was when turned off', { options: { breakdown: 'off' } }, async ($, on) => {
+      expect(await spawned($, on)).toBe('Add a test for an empty cart and run it.')
+    })
+
+    test('leaves a fork’s task as it was: it carries the session’s prompt', async ($, on) => {
+      expect(await spawned($, on, { fork: true })).toBe('Add a test for an empty cart and run it.')
+    })
+
+    test('leaves a headless subagent’s task as it was', async ($, on) => {
+      expect(await spawned($, on, {}, [])).toBe('Add a test for an empty cart and run it.')
+    })
+
+    test('keeps the highlighter’s section beside it', { options: { highlight: 'claude' } }, async ($, on) => {
+      on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are helpful.', scope: 'shared' }] }))
+      const composed = await $.prompt.compose({ ...ask, tools: ['TodoWrite'] })
+
+      expect(composed.sections.map(section => section.id)).toEqual(['intro', 'sentinel:tasks', 'sentinel:highlight'])
+    })
+  })
+
   test('says so when there is nothing selected to highlight', async ($, on) => {
     world(on, '')
     on('ui.selection', () => ({ value: undefined }))
@@ -137,7 +223,7 @@ describe('the highlighter', () => {
 })
 
 describe('the panel', () => {
-  test('/progress opens it on the goal, the tasks and the main thread, and says what is on the board', async ($, on) => {
+  test('/progress opens it on the goal and the tasks, and says what is on the board', async ($, on) => {
     const { opened } = world(on, '')
     on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [] } }))
 
@@ -147,9 +233,10 @@ describe('the panel', () => {
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ ...PANE, surface })
 
-      expect(await ui.find({ type: 'Text', text: '◆ sentinel' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: 'Main thread' })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /No subagents yet/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'sentinel' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'GOAL' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'Nothing yet. Your next prompt shows here.' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /No task list yet/ })).toBeDefined()
       expect(await ui.find({ type: 'Button' })).toBeUndefined()
       await ui.unmount()
     }

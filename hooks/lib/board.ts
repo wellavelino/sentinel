@@ -1,8 +1,9 @@
-import type { AgentRow, Board, Call, Task } from '../../types'
+import type { AgentRow, Board, Call, Filter, Task } from '../../types'
 
 export const EMPTY: Board = {
   goal: null,
   ask: '',
+  prompt: '',
   tasks: [],
   agents: [],
   context: 0,
@@ -20,6 +21,7 @@ const MAX_TASKS = 200
 const MAX_LABEL = 120
 const MAX_CALLS = 60
 const MAX_NOTE = 600
+const MAX_PROMPT = 8000
 const MAX_ERROR_LINES = 8
 const MAX_ERROR = 600
 
@@ -86,6 +88,7 @@ export function asked(board: Board, text: string): Board {
   return {
     ...board,
     ask: headline(text),
+    prompt: text.trim().slice(0, MAX_PROMPT),
     tasks: isDone ? [] : board.tasks,
     agents: board.agents.filter(agent => agent.status === 'running'),
   }
@@ -248,15 +251,19 @@ function all(board: Board): number {
   return Math.max(board.total ?? 0, board.agents.reduce((sum, agent) => sum + agent.used, board.used))
 }
 
-/** A model request answered: the context it filled and what it spent, on the main thread or an agent. */
+/**
+ * A model request answered: the context it filled and what it spent, on the main thread or an
+ * agent, and on the task in progress where it was made.
+ */
 export function stepped(board: Board, agentId: string | undefined, usage: Usage, now: number): Board {
   const total = all(board) + spent(usage)
+  const booked = onCurrent(board, agentId, task => ({ ...task, spent: (task.spent ?? 0) + spent(usage) }))
 
   if (agentId === undefined) {
-    return { ...board, context: filled(usage), used: board.used + spent(usage), total }
+    return { ...booked, context: filled(usage), used: board.used + spent(usage), total }
   }
 
-  return withAgent({ ...board, total }, agentId, now, agent => ({
+  return withAgent({ ...booked, total }, agentId, now, agent => ({
     ...agent,
     status: 'running',
     endedAt: undefined,
@@ -265,10 +272,17 @@ export function stepped(board: Board, agentId: string | undefined, usage: Usage,
   }))
 }
 
-/** An agent's run over: how it ended and when. One never heard of leaves the board as it was. */
-export function ended(board: Board, agentId: string, status: 'done' | 'failed', now: number): Board {
+/**
+ * An agent's run over: how it ended, when, and the first line of what it answered, with the files
+ * under `cwd` it names by their path from there. One never heard of leaves the board as it was.
+ */
+export function ended(board: Board, agentId: string, status: 'done' | 'failed', now: number, said = '', cwd = ''): Board {
+  const root = (cwd.endsWith('/') ? cwd : `${cwd}/`).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // Only where a path starts: at the start, or after a space, quote, backtick or bracket.
+  const line = cwd === '' ? headline(said) : headline(said).replace(new RegExp(`(^|[\\s'"\`(\\[])${root}`, 'g'), '$1')
+
   return board.agents.some(agent => agent.id === agentId)
-    ? withAgent(board, agentId, now, agent => ({ ...agent, status, endedAt: now }))
+    ? withAgent(board, agentId, now, agent => ({ ...agent, status, endedAt: now, said: line || agent.said }))
     : board
 }
 
@@ -288,6 +302,7 @@ export function carried(before: readonly Task[], next: readonly Task[], now: num
       endedAt: old?.endedAt,
       calls: old?.calls,
       note: old?.note,
+      spent: old?.spent,
       ...task,
     }
 
@@ -415,19 +430,6 @@ export function sweep(width: number, frame: number): { before: string; lit: stri
   return { before: '─'.repeat(at), lit: '━'.repeat(lit), after: '─'.repeat(reach - at) }
 }
 
-const PULSE = ['░', '▒', '▓', '▒']
-const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-
-/** The cell at a bar's growing edge, at `frame`: it swells and fades while the work goes on. */
-export function pulse(frame: number): string {
-  return PULSE[frame % PULSE.length] ?? '░'
-}
-
-/** The mark of a thread at work, at `frame`. */
-export function spinner(frame: number): string {
-  return SPINNER[frame % SPINNER.length] ?? '⠋'
-}
-
 /** Whether anything on the board is being worked on now: a task in progress, an agent running. */
 export function isLive(board: Board): boolean {
   const isDoing = (tasks: readonly Task[]) => tasks.some(task => task.status === 'in_progress')
@@ -474,10 +476,15 @@ export function hasWork(board: Board): boolean {
   return board.goal !== null || board.tasks.length > 0 || board.agents.length > 0
 }
 
-/** What a call was given, in one line: its command, file, pattern or address. */
-export function described(input: unknown): string {
+/** What a call was given, in one line: its command, file, pattern or address; a file under `cwd` by its path from there. */
+export function described(input: unknown, cwd = ''): string {
   const given = record(input)
-  const first = [given.command, given.file_path, given.notebook_path, given.pattern, given.url, given.query, given.description]
+  const root = cwd.endsWith('/') ? cwd : `${cwd}/`
+  const file = (value: unknown) => {
+    const path = text(value)
+    return cwd !== '' && path.startsWith(root) ? path.slice(root.length) : path
+  }
+  const first = [given.command, file(given.file_path), file(given.notebook_path), given.pattern, given.url, given.query, given.description]
     .map(text)
     .find(value => value.trim() !== '')
 
@@ -535,39 +542,202 @@ export function noted(board: Board, agentId: string | undefined, said: string): 
   }))
 }
 
-export type Problem = Call & { isFixed: boolean }
+export type Problem = Call & { isFixed: boolean; fixedAt?: number }
 
-/** A task's failed calls, each fixed when a later call of the same tool on the same thing went through. */
+/**
+ * A task's failed calls, each fixed when a later call of the same tool on the same thing went
+ * through, and when that was.
+ */
 export function problems(task: Task): Problem[] {
   const calls = task.calls ?? []
 
-  return calls.flatMap((call, index) =>
-    call.error === undefined
-      ? []
-      : [
-          {
-            ...call,
-            isFixed: calls
-              .slice(index + 1)
-              .some(later => later.error === undefined && later.tool === call.tool && later.what === call.what),
-          },
-        ],
-  )
+  return calls.flatMap((call, index) => {
+    if (call.error === undefined) {
+      return []
+    }
+
+    const fix = calls
+      .slice(index + 1)
+      .find(later => later.error === undefined && later.tool === call.tool && later.what === call.what)
+
+    return [{ ...call, isFixed: fix !== undefined, fixedAt: fix?.at }]
+  })
 }
 
 const WRITERS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
 
+// The lines a piece of text holds: none when it is empty, a closing newline opening no line.
+const lineCount = (value: unknown) => {
+  const body = text(value).replace(/\n$/, '')
+
+  return body === '' ? 0 : body.split('\n').length
+}
+
+/**
+ * The lines a call that writes a file adds and removes, as its input tells them: an edit's old
+ * text is counted removed and its new text added, so a changed line counts once each way.
+ */
+export function changed(tool: string, input: unknown): { added: number; removed: number } | undefined {
+  const given = record(input)
+
+  switch (tool) {
+    case 'Edit':
+      return { added: lineCount(given.new_string), removed: lineCount(given.old_string) }
+    case 'MultiEdit': {
+      const edits = Array.isArray(given.edits) ? given.edits.map(record) : []
+
+      return {
+        added: edits.reduce((sum, edit) => sum + lineCount(edit.new_string), 0),
+        removed: edits.reduce((sum, edit) => sum + lineCount(edit.old_string), 0),
+      }
+    }
+    case 'Write':
+      return { added: lineCount(given.content), removed: 0 }
+    case 'NotebookEdit':
+      return { added: lineCount(given.new_source), removed: 0 }
+    default:
+      return undefined
+  }
+}
+
+export type FileChange = { path: string; added: number; removed: number }
+
 /** What a task came to: the files it changed, the commands it ran, its problems fixed and open. */
-export function outcome(task: Task): { files: string[]; commands: number; fixed: number; open: number } {
+export function outcome(task: Task): { files: FileChange[]; commands: number; fixed: number; open: number } {
   const calls = task.calls ?? []
   const found = problems(task)
+  const files = new Map<string, FileChange>()
+
+  for (const call of calls) {
+    if (WRITERS.has(call.tool) && call.error === undefined) {
+      const file = files.get(call.what) ?? { path: call.what, added: 0, removed: 0 }
+
+      files.set(call.what, {
+        ...file,
+        added: file.added + (call.lines?.added ?? 0),
+        removed: file.removed + (call.lines?.removed ?? 0),
+      })
+    }
+  }
 
   return {
-    files: [...new Set(calls.filter(call => WRITERS.has(call.tool) && call.error === undefined).map(call => call.what))],
+    files: [...files.values()],
     commands: calls.filter(call => call.tool === 'Bash').length,
     fixed: found.filter(problem => problem.isFixed).length,
     open: found.filter(problem => !problem.isFixed).length,
   }
+}
+
+/** A line cut to the columns it has, its last one an ellipsis where it is cut. */
+export function fit(text: string, width: number): string {
+  const chars = [...text]
+
+  return chars.length <= width ? text : `${chars.slice(0, Math.max(0, width - 1)).join('')}…`
+}
+
+/** A command that tests, lints, typechecks or builds, as against one that only looks around. */
+const CHECK = /\b(test|tests|spec|lint|check|typecheck|tsc|build|verify|vitest|jest|pytest|eslint|biome|ruff|mypy|clippy)\b/
+
+/** How the last check a task ran went: `✓ npm test passed`, or nothing where it ran none. */
+// Commands that only look at files, move about or handle them: `cat test/a.test.js` or `rm -rf build` runs no check.
+const LOOK = /^(ls|cat|head|tail|less|more|grep|rg|find|fd|tree|stat|file|wc|sed|awk|echo|printf|cd|pwd|git|diff|which|type|rm|mkdir|cp|mv|touch|chmod|ln|test|\[)$/
+
+// Installing or removing a package runs nothing: `npm install vitest`, `pip install pytest`.
+const INSTALL = /^(install|i|add|ci|remove|rm|uninstall|un|update|upgrade|get)$/
+
+// A part of a command line is a check when it names one and does more than look or install.
+const isCheck = (part: string) => {
+  const [head = '', verb = ''] = part.trim().split(/\s+/)
+
+  return CHECK.test(part) && !LOOK.test(head) && !INSTALL.test(verb)
+}
+
+// The command line's parts, each with the operator after it: `cd x && npm test 2>&1 | tail` holds `npm test`, then `|`.
+const piecesOf = (line: string) => line.split(/\s*(&&|\|\||;|\|)\s*/)
+
+export function checks(task: Task): string {
+  const last = (task.calls ?? []).findLast(call =>
+    call.tool === 'Bash' && piecesOf(call.what).some((part, i) => i % 2 === 0 && isCheck(part)))
+
+  if (last === undefined) {
+    return ''
+  }
+
+  const pieces = piecesOf(last.what)
+  const at = pieces.findIndex((part, i) => i % 2 === 0 && isCheck(part))
+  const named = (pieces[at] ?? '').replace(/\s*\d*>&?\s*\S+/g, '').trim() || last.what
+
+  // Only `&&` after it keeps the check's exit code as the line's; a pipe, `||` or `;` gives the line another's.
+  // Even after `&&` only a success is the check's: a failure may be a later command's, as a denied `git push`.
+  const after = pieces.slice(at + 1)
+  if (after.some((part, i) => i % 2 === 0 && part !== '&&') || (last.error !== undefined && after.length > 1)) {
+    return `• ${named} ran`
+  }
+
+  return last.error === undefined ? `✓ ${named} passed` : `✕ ${named} failed`
+}
+
+/** One task of the queue: its number in it, its place in its thread's list, and the thread. */
+export type Entry = { n: number; at: number; task: Task; thread: { id: string; label: string } }
+
+/** Every thread's tasks as one list numbered from 1: the main thread's, then each agent's. */
+export function queue(board: Board): Entry[] {
+  const threads = [
+    { id: 'main', label: 'main', tasks: board.tasks },
+    ...board.agents.map(agent => ({ id: agent.id, label: agent.label || agent.type || 'agent', tasks: agent.tasks })),
+  ]
+
+  return threads
+    .flatMap(thread => thread.tasks.map((task, at) => ({ at, task, thread: { id: thread.id, label: thread.label } })))
+    .map((entry, index) => ({ n: index + 1, ...entry }))
+}
+
+const isTroubled = (task: Task) => problems(task).some(problem => !problem.isFixed)
+const FILTERS: Record<Filter, (task: Task) => boolean> = {
+  all: () => true,
+  open: task => task.status !== 'completed',
+  problems: isTroubled,
+  done: task => task.status === 'completed',
+}
+
+/** The entries a filter lets through. */
+export function filtered(entries: readonly Entry[], filter: Filter): Entry[] {
+  return entries.filter(entry => FILTERS[filter](entry.task))
+}
+
+/** How many entries each filter lets through. */
+export function counts(entries: readonly Entry[]): Record<Filter, number> {
+  return {
+    all: entries.length,
+    open: filtered(entries, 'open').length,
+    problems: filtered(entries, 'problems').length,
+    done: filtered(entries, 'done').length,
+  }
+}
+
+/** A stretch of time as a clock writes it: 0:42, 3:05, 1:02:10. */
+export function clocked(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  const two = (value: number) => String(value).padStart(2, '0')
+
+  return seconds < 3600
+    ? `${Math.floor(seconds / 60)}:${two(seconds % 60)}`
+    : `${Math.floor(seconds / 3600)}:${two(Math.floor(seconds / 60) % 60)}:${two(seconds % 60)}`
+}
+
+/** How long the queue has taken: from its first task's start to now while it runs, else to its last end. */
+export function span(board: Board, now: number): number {
+  const tasks = queue(board).map(entry => entry.task)
+  const starts = tasks.flatMap(task => (task.startedAt === undefined ? [] : [task.startedAt]))
+
+  if (starts.length === 0) {
+    return 0
+  }
+
+  const first = Math.min(...starts)
+  const last = isLive(board) ? now : Math.max(first, ...tasks.flatMap(task => (task.endedAt === undefined ? [] : [task.endedAt])))
+
+  return last - first
 }
 
 /** A tool's name as a row shows it: an MCP tool without its prefix. */

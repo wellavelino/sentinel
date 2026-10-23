@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { aimed, asked, bar, carried, cleared, compact, elapsed, EMPTY, ended, filled, hasWork, isAsk, isLive, logged, named, nearby, noted, outcome, problems, progress, pulse, reconciled, share, spent, spinner, stepped, summary, sweep, tasked, tooled } from '../hooks/lib/board'
+import { aimed, asked, bar, carried, changed, checks, cleared, clocked, compact, counts, described, elapsed, EMPTY, ended, filled, filtered, fit, hasWork, isAsk, isLive, logged, named, nearby, noted, outcome, problems, progress, queue, reconciled, share, span, spent, stepped, summary, sweep, tasked, tooled } from '../hooks/lib/board'
 
 const USAGE = { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 800 }
 
@@ -302,14 +302,6 @@ describe('sweep', () => {
   })
 })
 
-describe('pulse and spinner', () => {
-  test('give a cell that changes with the frame and comes round again', () => {
-    expect([0, 1, 2, 3, 4].map(pulse)).toEqual(['░', '▒', '▓', '▒', '░'])
-    expect(spinner(0)).not.toBe(spinner(1))
-    expect(spinner(10)).toBe(spinner(0))
-  })
-})
-
 describe('isLive', () => {
   test('says whether anything on the board is being worked on', () => {
     const waiting = tooled(EMPTY, undefined, 'TodoWrite', { todos: [{ content: 'a', status: 'pending', activeForm: 'A' }] }, {}, 0)
@@ -407,7 +399,168 @@ describe('what a task heard of', () => {
       ],
     }
 
-    expect(problems(task).map(problem => [problem.what, problem.isFixed])).toEqual([['npm test', true], ['make', false]])
-    expect(outcome(task)).toEqual({ files: ['a.ts', 'b.ts'], commands: 3, fixed: 1, open: 1 })
+    expect(problems(task).map(problem => [problem.what, problem.isFixed, problem.fixedAt])).toEqual([['npm test', true, 4], ['make', false, undefined]])
+    expect(outcome(task)).toEqual({
+      files: [
+        { path: 'a.ts', added: 0, removed: 0 },
+        { path: 'b.ts', added: 0, removed: 0 },
+      ],
+      commands: 3,
+      fixed: 1,
+      open: 1,
+    })
+  })
+})
+
+describe('what a task changed and checked', () => {
+  test('counts the lines an edit adds and removes', () => {
+    expect(changed('Edit', { file_path: 'a.ts', old_string: 'a\nb', new_string: 'a\nb\nc' })).toEqual({ added: 3, removed: 2 })
+    expect(changed('MultiEdit', { edits: [{ old_string: 'a', new_string: 'b\nc' }, { old_string: 'x\ny', new_string: '' }] })).toEqual({ added: 2, removed: 3 })
+    expect(changed('Write', { content: 'one\ntwo\n' })).toEqual({ added: 2, removed: 0 })
+    expect(changed('NotebookEdit', { new_source: 'print(1)' })).toEqual({ added: 1, removed: 0 })
+    expect(changed('Bash', { command: 'ls' })).toBeUndefined()
+    expect(changed('Edit', {})).toEqual({ added: 0, removed: 0 })
+  })
+
+  test('adds up the lines each file took, and says how the last command went', () => {
+    const task = {
+      id: '0',
+      subject: 'Fix',
+      status: 'completed' as const,
+      calls: [
+        { at: 1, tool: 'Edit', what: 'a.ts', lines: { added: 4, removed: 1 } },
+        { at: 2, tool: 'Bash', what: 'npm test', error: 'FAIL' },
+        { at: 3, tool: 'Edit', what: 'a.ts', lines: { added: 2, removed: 2 } },
+        { at: 4, tool: 'Write', what: 'b.ts', lines: { added: 9, removed: 0 } },
+        { at: 5, tool: 'Bash', what: 'npm test' },
+      ],
+    }
+
+    expect(outcome(task).files).toEqual([
+      { path: 'a.ts', added: 6, removed: 3 },
+      { path: 'b.ts', added: 9, removed: 0 },
+    ])
+    expect(checks(task)).toBe('✓ npm test passed')
+    expect(checks({ ...task, calls: task.calls.slice(0, 2) })).toBe('✕ npm test failed')
+    expect(checks({ ...task, calls: [] })).toBe('')
+    // A command that checks nothing is not a check.
+    expect(checks({ ...task, calls: [...task.calls, { at: 6, tool: 'Bash', what: 'git status' }] })).toBe('✓ npm test passed')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'git status' }] })).toBe('')
+    // A command that only looks at tests, or at a build, is not a check either.
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cat src/discount.js; ls test* tests 2>/dev/null' }] })).toBe('')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cat test/cart.test.js && git diff build/' }] })).toBe('')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'ls tests && pytest -q' }] })).toBe('✓ pytest -q passed')
+    // Installing a test tool runs no check.
+    for (const what of ['npm install vitest', 'pip install pytest', 'yarn add -D jest', 'npm i -D eslint']) {
+      expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what }] })).toBe('')
+    }
+    // A failure after the check is another command's: `npm test && git push` with the push denied.
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'npm test && git push', error: 'denied' }] })).toBe('• npm test ran')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'npm test && git push' }] })).toBe('✓ npm test passed')
+    // Nor is one that makes, moves or removes what a check reads.
+    for (const what of ['rm -rf build', 'mkdir -p build', 'cp fixture.json tests/', 'mv a.test.js test/', 'touch test/a.js', 'test -f build/out.js']) {
+      expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what }] })).toBe('')
+    }
+    // It names the check itself, not the plumbing around it.
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cd /repo && npm test 2>&1 && git status' }] })).toBe('✓ npm test passed')
+    // Piped into another command, or followed by one whatever it did, the exit code is not the check's: it ran, and how it went is not known.
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'cd /repo && npm test 2>&1 | tail -n 12' }] })).toBe('• npm test ran')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'npm test | tail', error: 'Exit code 1' }] })).toBe('• npm test ran')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'npm test || echo flaky' }] })).toBe('• npm test ran')
+    expect(checks({ ...task, calls: [{ at: 6, tool: 'Bash', what: 'npm test; echo done' }] })).toBe('• npm test ran')
+  })
+})
+
+describe('what a task spent', () => {
+  test('books each request on the task in progress where it was made, and keeps it across a rebuilt list', () => {
+    const todos = (statuses: string[]) => statuses.map((status, index) => ({ content: `Step ${index + 1}`, status, activeForm: `Doing ${index + 1}` }))
+    let board = tooled(EMPTY, undefined, 'TodoWrite', { todos: todos(['in_progress', 'pending']) }, {}, 0)
+    board = stepped(board, undefined, USAGE, 1)
+    board = stepped(board, undefined, USAGE, 2)
+    board = tooled(board, undefined, 'TodoWrite', { todos: todos(['completed', 'in_progress']) }, {}, 3)
+
+    expect(board.tasks.map(task => task.spent)).toEqual([2 * spent(USAGE), undefined])
+  })
+
+  test('keeps what a subagent said last when its run ends', () => {
+    const board = ended(stepped(EMPTY, 'agent-1', USAGE, 0), 'agent-1', 'done', 5, '  Found 38 refs.\nMore below.')
+
+    expect(board.agents[0]).toMatchObject({ status: 'done', said: 'Found 38 refs.' })
+  })
+
+  test("names the files a subagent's answer cites by their path from the session's folder", () => {
+    const board = ended(stepped(EMPTY, 'agent-1', USAGE, 0), 'agent-1', 'done', 5, 'One bug in `/repo/src/discount.js:4`, none in /repo/src/cart.js.', '/repo')
+
+    expect(board.agents[0]?.said).toBe('One bug in `src/discount.js:4`, none in src/cart.js.')
+  })
+
+  test("leaves the session's folder where it is not where a path starts", () => {
+    const at = (said: string, cwd: string) => ended(stepped(EMPTY, 'agent-1', USAGE, 0), 'agent-1', 'done', 5, said, cwd).agents[0]?.said
+
+    expect(at('Backup at /mnt/bak/home/u/repo/x.js, see "/home/u/repo/y.js".', '/home/u/repo')).toBe('Backup at /mnt/bak/home/u/repo/x.js, see "y.js".')
+    expect(at('See /etc/hosts and a/b.', '/')).toBe('See etc/hosts and a/b.')
+  })
+})
+
+describe('the queue', () => {
+  const todos = (statuses: string[], name: string) =>
+    statuses.map((status, index) => ({ content: `${name} ${index + 1}`, status, activeForm: `Doing ${name} ${index + 1}` }))
+  let board = tooled(EMPTY, undefined, 'TodoWrite', { todos: todos(['completed', 'in_progress', 'pending'], 'main') }, {}, 1000)
+  board = named(stepped(board, 'agent-1', USAGE, 0), 'agent-1', 'Clean up', 'general-purpose')
+  board = tooled(board, 'agent-1', 'TodoWrite', { todos: todos(['completed'], 'clean') }, {}, 500)
+  board = logged(board, undefined, { at: 1200, tool: 'Bash', what: 'make', error: 'boom' })
+
+  test('numbers every thread’s tasks in one list, the main thread first', () => {
+    expect(queue(board).map(entry => [entry.n, entry.task.subject, entry.thread.id, entry.thread.label, entry.at])).toEqual([
+      [1, 'main 1', 'main', 'main', 0],
+      [2, 'main 2', 'main', 'main', 1],
+      [3, 'main 3', 'main', 'main', 2],
+      [4, 'clean 1', 'agent-1', 'Clean up', 0],
+    ])
+  })
+
+  test('filters it to the open, the troubled or the done, and counts each', () => {
+    const all = queue(board)
+
+    expect(filtered(all, 'all')).toEqual(all)
+    expect(filtered(all, 'open').map(entry => entry.n)).toEqual([2, 3])
+    expect(filtered(all, 'problems').map(entry => entry.n)).toEqual([2])
+    expect(filtered(all, 'done').map(entry => entry.n)).toEqual([1, 4])
+    expect(counts(all)).toEqual({ all: 4, open: 2, problems: 1, done: 2 })
+  })
+
+  test('times the whole of it from its first start, to now while it runs', () => {
+    expect(span(board, 4000)).toBe(3500)
+    expect(span(EMPTY, 4000)).toBe(0)
+
+    const done = tooled(board, undefined, 'TodoWrite', { todos: todos(['completed', 'completed', 'completed'], 'main') }, {}, 3000)
+    expect(span(ended(done, 'agent-1', 'done', 3000), 9000)).toBe(2500)
+  })
+})
+
+describe('clocked', () => {
+  test('writes a stretch of time as a clock does', () => {
+    expect([0, 42_000, 185_000, 3_730_000].map(clocked)).toEqual(['0:00', '0:42', '3:05', '1:02:10'])
+  })
+})
+
+describe('described', () => {
+  test('names a file by its path from where the session runs, as the panel shows it', () => {
+    expect(described({ file_path: '/repo/src/cart.js' }, '/repo')).toBe('src/cart.js')
+    expect(described({ notebook_path: '/repo/nb/a.ipynb' }, '/repo/')).toBe('nb/a.ipynb')
+    // A file outside it, or a directory that only starts the same, keeps its whole path.
+    expect(described({ file_path: '/etc/hosts' }, '/repo')).toBe('/etc/hosts')
+    expect(described({ file_path: '/repo-old/a.js' }, '/repo')).toBe('/repo-old/a.js')
+    // A command is left as it was given.
+    expect(described({ command: 'cat /repo/a.js' }, '/repo')).toBe('cat /repo/a.js')
+    expect(described({ file_path: '/repo/a.js' })).toBe('/repo/a.js')
+  })
+})
+
+describe('fit', () => {
+  test('cuts a line to the columns it has, with an ellipsis, and leaves a short one as it is', () => {
+    expect(fit('Fix the parser', 20)).toBe('Fix the parser')
+    expect(fit('Fix the parser and its tests', 12)).toBe('Fix the par…')
+    expect(fit('Fix', 0)).toBe('…')
   })
 })

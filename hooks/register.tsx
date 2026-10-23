@@ -1,18 +1,23 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgentRow, Task, View } from '../types'
+import type { Task, View } from '../types'
 import {
   aimed,
   asked,
   bar,
+  changed,
+  checks,
   cleared,
+  clocked,
   compact,
+  counts,
   described,
-  elapsed,
   EMPTY,
   ended,
   failure,
+  filtered,
+  fit,
   hasWork,
   isAsk,
   isLive,
@@ -23,10 +28,9 @@ import {
   outcome,
   problems,
   progress,
-  pulse,
+  queue,
   reconciled,
-  share,
-  spinner,
+  span,
   stepped,
   summary,
   sweep,
@@ -55,11 +59,14 @@ const MAX_READINGS = 40
 const MIN_REVIEWED_REPLY = 200
 const MAX_AGENT_ROWS = 6
 const TASK_TOOLS = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList'])
-// What moves in the panel moves four times a second, and each task's own bar is this wide.
+// What moves in the panel moves four times a second; the bar of a task in progress is this wide.
 const TICK = 250
-const TASK_BAR = 10
+const RUNNING_BAR = 12
+// The whole list's bar, and the columns a thread's name takes.
+const OVERALL_BAR = 40
+const THREAD_NAME = 12
 // The task rows one drawing holds: a longer list shows the stretch around the task in progress.
-const MAX_TASK_ROWS = 60
+const MAX_TASK_ROWS = 30
 // The calls a task's details draw at once, the latest kept.
 const MAX_CALL_ROWS = 30
 
@@ -77,7 +84,7 @@ const readings = atom({ plugin: 'sentinel', key: 'readings' } as const, [])
 const board = atom({ plugin: 'sentinel', key: 'board' } as const, EMPTY)
 const frame = atom({ plugin: 'sentinel', key: 'frame' } as const, 0)
 const isDismissed = atom({ plugin: 'sentinel', key: 'isDismissed' } as const, false)
-const view = atom({ plugin: 'sentinel', key: 'view' } as const, { task: null, tab: 'details' } as View)
+const view = atom({ plugin: 'sentinel', key: 'view' } as const, { task: null, tab: 'details', filter: 'all' } as View)
 
 // Highlighter inks: bright enough to read as a pen, dark text on each.
 const INKS: Record<string, string> = {
@@ -90,6 +97,23 @@ const INKS: Record<string, string> = {
 const INK_TEXT = '#141414'
 
 const OWN_TASKS = new RegExp(`^${TASKS_TOOL}$`)
+
+// The task tool the request offers, what Claude opens a list with, and what it keeps the list with.
+const LIST_TOOLS: [string, string, string][] = [
+  ['TodoWrite', 'TodoWrite with every step as a task', 'TodoWrite'],
+  ['TaskCreate', 'TaskCreate, once a step', 'TaskUpdate'],
+  [TASKS_TOOL, `${TASKS_TOOL} with every step as a task`, TASKS_TOOL],
+]
+
+// What a subagent's task adds for the same, naming each task tool it may have, since its system prompt has no room for the section.
+const subagentBreakdown = (tools: string) =>
+  `# Task list\nThe person follows your work as a task list in a progress panel. When this task needs three or more distinct steps, your first tool call is a task list with every step as a task, made with the task tool you have (${tools}), before you read, edit or run anything. Then work one task at a time: mark it in progress as you start it and completed as soon as it is done, never two steps in one update. Add a task when you find more work. If you have none of these tools, go without a list.`
+
+// The section that has Claude break work into tasks even when nobody asked for a list.
+// Asked only to "write a list before you start", a model skipped it: it is told what its first call is.
+// Asked to keep one in progress, it marked two steps done in one call: it is told to update each step.
+const breakdown = ([, first, keep]: [string, string, string]) =>
+  `# Task list\nThe person follows your work as a task list in a progress panel, so keep one. When a request needs three or more distinct steps (for example: write a test, run it, fix the code, run it again), your first tool call is ${first}, before you read, edit or run anything. Then, with ${keep}, work one task at a time: mark it in progress as you start it and completed as soon as it is done, never two steps in one update, so each step's tool calls are booked on it. Add a task when you find more work. Only a request of one or two steps goes without a list.`
 
 // The task tool the model is given where Claude Code has none of its own, as the model reads it.
 const TASKS_SPEC = {
@@ -246,7 +270,7 @@ async function review(
         : await $.model.complete({
             model,
             system: REVIEW_SYSTEM,
-            prompt: reviewRequest(held.goal ?? held.ask, answer, digest),
+            prompt: reviewRequest(held.goal ?? (held.prompt || held.ask), answer, digest),
             maxTokens: 500,
             effort: 'low',
             timeoutMs: 30_000,
@@ -281,10 +305,13 @@ export const register: Register = (on, options) => {
   const hasBand = String(options.band ?? 'on') !== 'off'
   const isAuto = String(options.panel ?? 'auto') !== 'manual'
   const hasTasks = String(options.tasks ?? 'auto') !== 'off'
+  const isBreakingDown = String(options.breakdown ?? 'on') !== 'off'
   const reader = String(options.reader ?? 'fast')
   const readerModel = String(options.readerModel ?? 'haiku') || 'haiku'
   // The tool calls since the person last asked, for a reader that cannot see them.
   let digest = NO_CALLS
+  // The session's folder, asked once, so a file is named against the same root on every call.
+  let folder: Promise<string> | undefined
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -353,17 +380,38 @@ export const register: Register = (on, options) => {
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
 
-    // Where nothing draws the reply (a headless run), the marks would reach a reader raw.
-    if (!hasMarks || e.surfaces.length === 0) {
+    // Where nothing draws the reply (a headless run), the marks would reach a reader raw, and nobody watches the list.
+    if (e.surfaces.length === 0) {
       return composed
     }
+
+    const tool = isBreakingDown ? LIST_TOOLS.find(([name]) => e.tools.includes(name)) : undefined
 
     return {
       sections: [
         ...composed.sections,
-        { id: 'sentinel:highlight', text: INSTRUCTION, scope: 'session' },
+        ...(tool === undefined ? [] : [{ id: 'sentinel:tasks', text: breakdown(tool), scope: 'session' as const }]),
+        ...(hasMarks ? [{ id: 'sentinel:highlight', text: INSTRUCTION, scope: 'session' as const }] : []),
       ],
     }
+  })
+
+  // A subagent's system prompt is its definition's, composed without the hook above, and which task tool it has is
+  // not known when it starts: the task it is given asks for the list, naming each tool it may have. A fork carries
+  // the session's prompt.
+  on('agent.spawn', async ($, e, next) => {
+    try {
+      if (!isBreakingDown || e.fork || (await $.session.surfaces()).length === 0) {
+        return next(e)
+      }
+    } catch {
+      // A session that cannot say where it draws starts the subagent with its task as it was.
+      return next(e)
+    }
+
+    const tools = hasTasks ? `${TASKS_TOOL}, TodoWrite, or TaskCreate then TaskUpdate` : 'TodoWrite, or TaskCreate then TaskUpdate'
+
+    return next({ ...e, prompt: `${e.prompt}\n\n${subagentBreakdown(tools)}` })
   })
 
   on('command.run', { command: 'highlight' }, async ($, e) => {
@@ -469,8 +517,9 @@ export const register: Register = (on, options) => {
     try {
       if (agentId !== undefined) {
         const now = await $.clock.now()
+        const cwd = await (folder ??= $.session.cwd().catch(() => ''))
 
-        await update($, board, held => ended(held, agentId, e.reason === 'answer' ? 'done' : 'failed', now))
+        await update($, board, held => ended(held, agentId, e.reason === 'answer' ? 'done' : 'failed', now, e.answer, cwd))
       } else if (
         hasReader &&
         e.reason === 'answer' &&
@@ -557,121 +606,97 @@ export const register: Register = (on, options) => {
       }
 
       const { Box, Text } = $.ui.resolve(e)
-      const isWide = e.props.bodyColumns >= 100
-      const heat = (percent: number) => (percent >= 90 ? 'error' : percent >= 70 ? 'warning' : 'success')
+      const now = await $.clock.now()
       const meter = (fraction: number, width: number, color: string) => {
         const drawn = bar(fraction, width)
 
         return (
           <Text>
             <Text color={color}>{drawn.full}</Text>
-            <Text dimColor>{drawn.rest}</Text>
+            <Text dimColor>{'█'.repeat(drawn.rest.length)}</Text>
           </Text>
         )
       }
-      const context = (tokens: number) => {
-        if (tokens <= 0) {
-          return null
-        }
-
-        const percent = held.window > 0 ? Math.round((tokens / held.window) * 100) : null
-
-        return (
-          <Box marginLeft={2} flexShrink={0}>
-            <Text dimColor>ctx </Text>
-            {percent !== null && meter(percent / 100, 5, heat(percent))}
-            <Text>
-              {percent === null ? '' : ` ${percent}%`}
-              {isWide || percent === null ? ` ${compact(tokens)}` : ''}
-            </Text>
-          </Box>
-        )
-      }
-      const tasks = (list: AgentRow['tasks']) => {
-        const { done, total } = progress(list)
-
-        return (
-          total > 0 && (
-            <Box marginLeft={2} flexShrink={0}>
-              {meter(done / total, 10, 'success')}
-              <Text>
-                {' '}
-                {done}/{total}
-              </Text>
-            </Box>
-          )
-        )
-      }
-      const current = progress(held.tasks).current
-      // One row is kept for the count of the agents that do not fit.
-      const room = Math.max(0, Math.min(MAX_AGENT_ROWS, e.props.maxRows - (current === '' ? 1 : 2) - 1))
+      const entries = queue(held)
+      const done = entries.filter(entry => entry.task.status === 'completed').length
+      const running = entries.find(entry => entry.task.status === 'in_progress')
+      const upcoming = entries.find(entry => entry.task.status === 'pending')
+      const open = entries.reduce((sum, entry) => sum + problems(entry.task).filter(problem => !problem.isFixed).length, 0)
+      const percent = held.window > 0 && held.context > 0 ? Math.round((held.context / held.window) * 100) : null
       // Those still running first: what is finished waits for the next prompt to leave.
       const agents = [...held.agents].sort(
         (one, other) => Number(other.status === 'running') - Number(one.status === 'running'),
       )
-      const drawn = agents.slice(0, room)
-      const labelWidth = Math.min(28, drawn.reduce((most, agent) => Math.max(most, [...agent.label].length), 5))
+      const MARKS = { running: ['◐', 'warning'], done: ['✓', 'success'], failed: ['✕', 'error'] } as const
 
       return (
         <Box flexDirection="column">
-          <Box flexDirection="row">
-            <Text color="claude">◆ </Text>
-            <Box flexGrow={1} flexShrink={1}>
-              <Text bold wrap="truncate-end">
-                {held.goal === null ? held.ask || 'Working' : `Goal: ${held.goal}`}
-              </Text>
+          <Box flexDirection="row" gap={1}>
+            <Box key="band-mark" flexShrink={0}>
+              <Text color="warning">◆</Text>
             </Box>
-            {tasks(held.tasks)}
-            {context(held.context)}
-            {isWide && held.agents.length > 0 && (
-              <Box marginLeft={2} flexShrink={0}>
-                <Text dimColor>{share(held, held.used)}% of use</Text>
+            {entries.length > 0 && (
+              <Box flexShrink={0} gap={1}>
+                <Text bold>
+                  {done}/{entries.length}
+                </Text>
+                {meter(done / entries.length, 20, 'success')}
               </Box>
             )}
-            {isWide &&
-              held.limits
-                .filter(limit => limit.kind === 'five_hour' || limit.kind === 'seven_day')
-                .map(limit => (
-                  <Box marginLeft={2} flexShrink={0}>
-                    <Text dimColor>{limit.kind === 'five_hour' ? '5h' : '7d'} </Text>
-                    <Text color={heat(limit.percent)}>{Math.round(limit.percent)}%</Text>
-                  </Box>
-                ))}
+            <Box flexShrink={1}>
+              {running === undefined ? (
+                <Text bold wrap="truncate-end">
+                  {held.goal === null ? held.ask || 'Working' : `Goal: ${held.goal}`}
+                </Text>
+              ) : (
+                <Text color="warning" wrap="truncate-end">
+                  ◐ {running.n}. {running.task.active || running.task.subject}
+                </Text>
+              )}
+            </Box>
+            {running?.task.startedAt !== undefined && (
+              <Box key="band-clock" flexShrink={0}>
+                <Text dimColor>{clocked(now - running.task.startedAt)}</Text>
+              </Box>
+            )}
+            {open > 0 && (
+              <Box key="band-problems" flexShrink={0}>
+                <Text color="error">
+                  ! {open} problem{open === 1 ? '' : 's'}
+                </Text>
+              </Box>
+            )}
+            {/* The context keeps to the right edge; the rest reads from the left. */}
+            <Box flexGrow={1} />
+            {percent !== null && (
+              <Box flexShrink={0}>
+                <Text dimColor>ctx </Text>
+                {meter(percent / 100, 10, 'permission')}
+                <Text dimColor> {percent}%</Text>
+              </Box>
+            )}
           </Box>
-          {current !== '' && (
-            <Text dimColor wrap="truncate-end">
-              {'  ▸ '}
-              {current}
-            </Text>
-          )}
-          {drawn.map(agent => (
-            <Box flexDirection="row">
-              <Text dimColor>{'  ↳ '}</Text>
-              <Box width={labelWidth} flexShrink={0}>
-                <Text dimColor={agent.status !== 'running'} wrap="truncate-end">
-                  {agent.label || 'agent'}
-                </Text>
-              </Box>
-              <Box marginLeft={2} flexGrow={1} flexShrink={1}>
-                <Text color={agent.status === 'failed' ? 'error' : undefined} dimColor wrap="truncate-end">
-                  {agent.status}
-                  {agent.tools > 0 ? ` · ${agent.tools} tool${agent.tools === 1 ? '' : 's'}` : ''}
-                  {agent.status === 'running' && agent.last !== '' ? ` · ${agent.last}` : ''}
-                </Text>
-              </Box>
-              {tasks(agent.tasks)}
-              {context(agent.context)}
-              {isWide && (
-                <Box marginLeft={2} flexShrink={0}>
-                  <Text dimColor>{share(held, agent.used)}% of use</Text>
+          {e.props.maxRows >= 2 && (agents.length > 0 || upcoming !== undefined) && (
+            <Box flexDirection="row" paddingLeft={2} gap={3}>
+              {agents.slice(0, MAX_AGENT_ROWS).map((agent, index) => (
+                <Box flexShrink={0} gap={1}>
+                  <Text dimColor>
+                    {index === 0 ? '└ ' : ''}
+                    {agent.label || 'agent'}
+                  </Text>
+                  <Text color={MARKS[agent.status][1]}>{MARKS[agent.status][0]}</Text>
+                  <Text dimColor>{clocked((agent.endedAt ?? now) - agent.startedAt)}</Text>
+                </Box>
+              ))}
+              {agents.length > MAX_AGENT_ROWS && <Text dimColor>+{agents.length - MAX_AGENT_ROWS} more</Text>}
+              {upcoming !== undefined && (
+                <Box flexShrink={1}>
+                  <Text dimColor wrap="truncate-end">
+                    {agents.length === 0 ? '└ ' : ''}next: {upcoming.n}. {upcoming.task.subject}
+                  </Text>
                 </Box>
               )}
             </Box>
-          ))}
-          {agents.length > drawn.length && (
-            <Text dimColor>
-              {'  '}+{agents.length - drawn.length} more agent{agents.length - drawn.length === 1 ? '' : 's'}
-            </Text>
           )}
         </Box>
       )
@@ -696,6 +721,7 @@ export const register: Register = (on, options) => {
       digest = counted(digest, tool, agentId !== undefined, isFailed ? (ran.deny ?? ran.text ?? '') : undefined)
 
       const now = await $.clock.now()
+      const cwd = await (folder ??= $.session.cwd().catch(() => ''))
 
       if (agentId !== undefined || TASK_TOOLS.has(tool)) {
         await update($, board, held =>
@@ -711,9 +737,10 @@ export const register: Register = (on, options) => {
           return logged(held, agentId, {
             at: now,
             tool,
-            what: described(e),
+            what: described(e, cwd),
             error: isFailed ? failure(ran.deny ?? ran.text ?? '') : undefined,
             by,
+            lines: isFailed ? undefined : changed(tool, e),
           })
         })
       }
@@ -729,7 +756,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'progress' }, async ($, e) => {
     if (e.args.trim() === 'clear') {
       await update($, board, cleared)
-      await update($, view, (): View => ({ task: null, tab: 'details' }))
+      await update($, view, (): View => ({ task: null, tab: 'details', filter: 'all' }))
 
       return { text: 'The tasks and the subagents are forgotten.' }
     }
@@ -754,25 +781,25 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text, Button, Markdown } = $.ui.resolve(e)
     const work = await read($, board)
     const room = Math.max(20, e.props.bodyColumns)
-    const running = work.agents.filter(agent => agent.status === 'running').length
+    const now = await $.clock.now()
+    const entries = queue(work)
+    const done = entries.filter(entry => entry.task.status === 'completed').length
     const header = (
       <Box flexDirection="column" marginBottom={1}>
-        <Box gap={1}>
-          <Text color="claude" bold>
-            ◆ sentinel
-          </Text>
-          {running > 0 && <Text color="claude">● {running} running</Text>}
+        <Box flexDirection="row" gap={1}>
+          <Text color="warning">◆</Text>
+          <Text bold>sentinel</Text>
+          <Box flexGrow={1} />
+          {entries.length > 0 && <Text dimColor>{`${done}/${entries.length} · ${clocked(span(work, now))}`}</Text>}
         </Box>
         <Text dimColor wrap="truncate-end">
           {'─'.repeat(room)}
         </Text>
       </Box>
     )
-
-    const now = await $.clock.now()
     const isMoving = isLive(work)
     const at = isMoving ? await read($, frame) : 0
 
@@ -793,154 +820,66 @@ export const register: Register = (on, options) => {
       pending = { timer, at: now }
     }
 
-    const span = Math.max(8, Math.min(24, room - 36))
-    const heat = (percent: number) => (percent >= 90 ? 'error' : percent >= 70 ? 'warning' : 'success')
-    const stat = (name: string, fraction: number | null, color: string, text: string, hasEdge = false) => {
-      const drawn = bar(fraction ?? 0, span)
-      // The cell a bar grows into next swells and fades while the work on it goes on.
-      const edge = hasEdge && drawn.rest !== '' ? pulse(at) : ''
-
-      return (
-        <Box flexDirection="row">
-          <Box width={9} flexShrink={0}>
-            <Text dimColor>{name}</Text>
-          </Box>
-          {fraction !== null && (
-            <Box marginRight={1} flexShrink={0}>
-              <Text color={color}>{drawn.full}</Text>
-              {edge !== '' && <Text color={color}>{edge}</Text>}
-              <Text dimColor>{edge === '' ? drawn.rest : drawn.rest.slice(1)}</Text>
-            </Box>
-          )}
-          <Box flexShrink={1}>
-            <Text wrap="truncate-end">{text}</Text>
-          </Box>
-        </Box>
-      )
-    }
-    const context = (tokens: number, isWhole: boolean) => {
-      if (tokens <= 0) {
-        return null
-      }
-
-      const percent = work.window > 0 ? Math.round((tokens / work.window) * 100) : null
-      const size = isWhole && work.window > 0 ? `${compact(tokens)} of ${compact(work.window)}` : compact(tokens)
-
-      return percent === null
-        ? stat('context', null, 'success', size)
-        : stat('context', percent / 100, heat(percent), `${percent}%  ${size}`)
-    }
-    const use = (used: number) => {
-      const percent = share(work, used)
-
-      return stat('use', percent / 100, 'claude', `${percent}% of session`)
-    }
-    const steps = (tasks: readonly Task[]) => {
-      const { done, total } = progress(tasks)
-
-      return (
-        total > 0 &&
-        stat('tasks', done / total, 'success', `${done}/${total}`, tasks.some(task => task.status === 'in_progress'))
-      )
-    }
-    // A task has no measure of its own: done is a full bar, in progress a moving one.
-    const track = (task: Task) => {
-      if (task.status !== 'in_progress') {
-        return task.status === 'completed' ? (
-          <Text color="success">{'━'.repeat(TASK_BAR)}</Text>
-        ) : (
-          <Text dimColor>{'─'.repeat(TASK_BAR)}</Text>
-        )
-      }
-
-      const moving = sweep(TASK_BAR, at)
+    // A bar as the band draws it: the part done in a color, the rest in dim blocks.
+    const meter = (fraction: number, width: number, color: string) => {
+      const drawn = bar(fraction, width)
 
       return (
         <Text>
-          <Text dimColor>{moving.before}</Text>
-          <Text color="claude">{moving.lit}</Text>
-          <Text dimColor>{moving.after}</Text>
+          <Text color={color}>{drawn.full}</Text>
+          <Text dimColor>{'█'.repeat(drawn.rest.length)}</Text>
         </Text>
+      )
+    }
+    // A task in progress has no measure of its own: its bar is a lit stretch that moves.
+    const moving = () => {
+      const drawn = sweep(RUNNING_BAR, at)
+
+      return (
+        <Box flexDirection="row" flexShrink={0}>
+          <Text dimColor>
+            {drawn.before.replace(/./g, '█')}
+          </Text>
+          <Text color="warning">{drawn.lit.replace(/./g, '█')}</Text>
+          <Text dimColor>{drawn.after.replace(/./g, '█')}</Text>
+        </Box>
       )
     }
     const mark = (task: Task) =>
       task.status === 'completed' ? (
-        <Text color="success">✔</Text>
+        <Text color="success">✓</Text>
       ) : task.status === 'in_progress' ? (
-        <Text color="claude">▸</Text>
+        <Text color="warning">◐</Text>
       ) : (
         <Text dimColor>○</Text>
       )
     const opener = (thread: string, task: Task) => () =>
-      update($, view, () => ({ task: `${thread}:${task.id}`, tab: firstTab(task) }))
-    // Each row opens its task; the main list's first nine answer to their number too.
-    const row = (thread: string, tasks: readonly Task[]) => (task: Task) => {
-      const place = tasks.indexOf(task)
-      const open = problems(task).filter(problem => !problem.isFixed).length
-
-      return (
-        <Box flexDirection="row">
-          <Box width={2} flexShrink={0}>
-            {mark(task)}
-          </Box>
-          <Box flexGrow={1} flexShrink={1}>
-            <Button
-              key={`task-${thread}-${task.id}`}
-              plain
-              hotkey={thread === 'main' && place < 9 ? String(place + 1) : undefined}
-              onPress={opener(thread, task)}
-            >
-              <Text bold={task.status === 'in_progress'} dimColor={task.status === 'completed'}>
-                {task.status === 'in_progress' ? task.active || task.subject : task.subject}
-              </Text>
-              {open > 0 && <Text color="error"> ! {open}</Text>}
-            </Button>
-          </Box>
-          <Box marginLeft={1} flexShrink={0}>
-            {track(task)}
-          </Box>
-        </Box>
-      )
-    }
-    const todos = (thread: string, tasks: readonly Task[], room: number) => {
-      const near = nearby(tasks, room)
-
-      return [
-        near.before > 0 && <Text dimColor>{`  … ${near.before} done before`}</Text>,
-        ...near.shown.map(row(thread, tasks)),
-        near.after > 0 && <Text dimColor>{`  … ${near.after} more to do`}</Text>,
-      ]
-    }
-
+      update($, view, held => ({ ...held, task: `${thread}:${task.id}`, tab: firstTab(task) }))
     // A task opened: its calls, its problems and what it came to, one tab at a time.
     const shown = await read($, view)
-    const threads = [
-      { id: 'main', label: 'main thread', tasks: work.tasks },
-      ...work.agents.map(agent => ({ id: agent.id, label: agent.label || 'agent', tasks: agent.tasks })),
-    ]
-    const opened = threads
-      .map(thread => ({ thread, index: thread.tasks.findIndex(task => `${thread.id}:${task.id}` === shown.task) }))
-      .find(found => found.index !== -1)
+    const place = entries.findIndex(entry => `${entry.thread.id}:${entry.task.id}` === shown.task)
+    const opened = entries[place]
 
     if (opened !== undefined) {
-      const { thread, index } = opened
-      const list = thread.tasks
-      const task = list[index] as Task
+      const { task } = opened
       const calls = task.calls ?? []
       const found = problems(task)
-      const open = found.filter(problem => !problem.isFixed).length
       const came = outcome(task)
+      const checked = checks(task)
       const start = task.startedAt ?? calls[0]?.at ?? now
-      const took = task.startedAt === undefined ? '' : elapsed((task.endedAt ?? now) - task.startedAt)
       const since = (at: number) => {
         const seconds = Math.max(0, Math.round((at - start) / 1000))
 
         return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
       }
+      // Prev and next keep to the list it was opened from, where the task is still in it.
+      const among = filtered(entries, shown.filter ?? 'all')
+      const list = among.includes(opened) ? among : entries
       const step = (by: number) => {
-        const next = list[(index + by + list.length) % list.length] as Task
+        const at = list.indexOf(opened)
+        const next = list[(at + by + list.length) % list.length] as (typeof entries)[number]
 
-        return () => update($, view, () => ({ task: `${thread.id}:${next.id}`, tab: firstTab(next) }))
+        return () => update($, view, held => ({ ...held, task: `${next.thread.id}:${next.task.id}`, tab: firstTab(next.task) }))
       }
       const tab = (name: View['tab'], label: string, hotkey: string) => (
         <Button
@@ -953,18 +892,28 @@ export const register: Register = (on, options) => {
       )
       const status =
         task.status === 'completed'
-          ? `done${took === '' ? '' : ` in ${took}`}`
+          ? 'Done'
           : task.status === 'in_progress'
-            ? `in progress${took === '' ? '' : ` · ${took}`}`
-            : 'pending'
+            ? `In progress · ${task.active || task.subject}`
+            : place === 0
+              ? 'Pending'
+              : `Pending · queued after task ${place}`
+      const started = task.startedAt === undefined ? '—' : new Date(task.startedAt).toTimeString().slice(0, 5)
+      const meta = [
+        ['thread', opened.thread.label],
+        ['started', started],
+        ['time', task.startedAt === undefined ? '—' : clocked((task.endedAt ?? now) - task.startedAt)],
+        ['tool calls', String(calls.length)],
+        ['spent', task.spent === undefined || task.spent <= 0 ? '—' : compact(task.spent)],
+      ] as const
       const notStarted = task.status === 'pending' && calls.length === 0
       const drawn = calls.slice(-MAX_CALL_ROWS)
       const details = (
         <Box flexDirection="column">
-          {task.status === 'in_progress' && task.active !== undefined && (
-            <Text color="claude" wrap="truncate-end">
-              ▸ {task.active}
-            </Text>
+          {task.status === 'in_progress' && (
+            <Box marginBottom={1}>
+              <Text color="warning" wrap="truncate-end">{`◐ ${task.active || task.subject}`}</Text>
+            </Box>
           )}
           {calls.length > drawn.length && <Text dimColor>{`… ${calls.length - drawn.length} earlier calls`}</Text>}
           {drawn.map(call => (
@@ -973,7 +922,7 @@ export const register: Register = (on, options) => {
                 <Text dimColor>{since(call.at)}</Text>
               </Box>
               <Box width={2} flexShrink={0}>
-                {call.error === undefined ? <Text color="success">✔</Text> : <Text color="error">✖</Text>}
+                {call.error === undefined ? <Text dimColor>•</Text> : <Text color="error">✕</Text>}
               </Box>
               <Box width={11} flexShrink={0}>
                 <Text bold wrap="truncate-end">
@@ -984,6 +933,19 @@ export const register: Register = (on, options) => {
                 {/* A path keeps its file name in sight: it is cut in the middle, not at the end. */}
                 <Text wrap={call.what.startsWith('/') ? 'truncate-middle' : 'truncate-end'}>{call.what}</Text>
               </Box>
+              {call.error !== undefined ? (
+                <Box marginLeft={1} flexShrink={0}>
+                  <Text color="error" wrap="truncate-end">
+                    {call.error.split('\n')[0]}
+                  </Text>
+                </Box>
+              ) : (
+                call.lines !== undefined && (
+                  <Box marginLeft={1} flexShrink={0}>
+                    <Text dimColor>{`+${call.lines.added} −${call.lines.removed}`}</Text>
+                  </Box>
+                )
+              )}
               {call.by !== undefined && (
                 <Box marginLeft={1} flexShrink={0}>
                   <Text dimColor>{call.by}</Text>
@@ -994,7 +956,7 @@ export const register: Register = (on, options) => {
           {calls.length === 0 && (
             <Text dimColor wrap="wrap">
               {notStarted
-                ? 'Not started yet. Its tool calls show here as they run.'
+                ? 'Not started. Tool calls show here as they happen.'
                 : 'No tool calls booked on it: it was worked on before the mod loaded, or with none.'}
             </Text>
           )}
@@ -1004,183 +966,306 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column">
           {found.map(problem => (
             <Box flexDirection="column" borderStyle="round" borderColor="error" borderDimColor={problem.isFixed} paddingX={1}>
-              <Box flexDirection="row">
+              <Box flexDirection="row" gap={1}>
+                <Text color="error">!</Text>
                 <Box flexGrow={1} flexShrink={1}>
-                  <Text bold wrap="truncate-end">
-                    <Text color="error">✖ </Text>
-                    {toolName(problem.tool)} {problem.what}
-                  </Text>
+                  <Text bold wrap="truncate-end">{`${problem.what || toolName(problem.tool)} failed`}</Text>
                 </Box>
-                <Box marginLeft={1} flexShrink={0}>
-                  {problem.isFixed ? <Text color="success">fixed later</Text> : <Text color="warning">still open</Text>}
-                </Box>
+                {problem.isFixed ? <Text color="success">resolved</Text> : <Text color="warning">open</Text>}
               </Box>
-              <Text dimColor>
-                at {since(problem.at)}
-                {problem.by === undefined ? '' : ` · by ${problem.by}`}
+              <Text dimColor wrap="truncate-end">
+                {`${toolName(problem.tool)} · ${since(problem.at)}${problem.by === undefined ? '' : ` · by ${problem.by}`}`}
               </Text>
               <Text wrap="wrap">{problem.error}</Text>
+              <Text dimColor wrap="wrap">
+                {problem.fixedAt === undefined
+                  ? 'Not fixed yet: no later run of it has gone through.'
+                  : `Went through again at ${since(problem.fixedAt)}.`}
+              </Text>
             </Box>
           ))}
           {found.length === 0 && (
             <Text dimColor wrap="wrap">
-              {notStarted ? 'Not started yet.' : 'No problems: every tool call it made went through.'}
+              {notStarted ? 'Not started.' : 'No problems. Every tool call in this task succeeded.'}
             </Text>
           )}
         </Box>
       )
-      const result = notStarted ? (
-        <Text dimColor>Not started yet.</Text>
-      ) : (
-        <Box flexDirection="column">
-          {task.status === 'completed' ? (
-            <Text color="success">
-              ✔ Done{took === '' ? '' : ` in ${took}`} · {calls.length} call{calls.length === 1 ? '' : 's'}
-            </Text>
-          ) : (
-            <Text dimColor wrap="wrap">
-              Not done yet: this is what it has come to so far.
-            </Text>
-          )}
-          {task.note !== undefined && (
-            <Box flexDirection="column" marginTop={1}>
-              <Text dimColor>Claude said</Text>
-              <Text wrap="wrap">{task.note}</Text>
-            </Box>
-          )}
-          <Box flexDirection="column" marginTop={1}>
-            <Text dimColor>
-              {came.files.length === 0 ? 'No files changed' : `${came.files.length} file${came.files.length === 1 ? '' : 's'} changed`}
-            </Text>
+      const result =
+        task.status !== 'completed' ? (
+          <Text dimColor wrap="wrap">
+            {notStarted ? 'Not started.' : 'No result yet. It appears here when the task is done: summary, files changed, checks.'}
+          </Text>
+        ) : (
+          <Box flexDirection="column">
+            {task.note !== undefined && (
+              <Box marginBottom={1}>
+                <Markdown text={task.note} />
+              </Box>
+            )}
+            <Text dimColor>FILES</Text>
             {came.files.map(file => (
-              <Text wrap="truncate-middle">  {file}</Text>
+              <Box flexDirection="row" gap={1}>
+                <Box flexGrow={1} flexShrink={1}>
+                  <Text wrap="truncate-middle">{file.path}</Text>
+                </Box>
+                <Text color="success">{`+${file.added}`}</Text>
+                <Text color="error">{`−${file.removed}`}</Text>
+              </Box>
             ))}
+            {came.files.length === 0 && <Text dimColor>No files changed.</Text>}
+            {checked !== '' && (
+              <Box marginTop={1}>
+                {checked.startsWith('•') ? (
+                  <Text dimColor>{checked}</Text>
+                ) : (
+                  <Text color={checked.startsWith('✓') ? 'success' : 'error'}>{checked}</Text>
+                )}
+              </Box>
+            )}
           </Box>
-          <Box marginTop={1}>
-            <Text dimColor>
-              {came.commands} command{came.commands === 1 ? '' : 's'} run · {came.fixed} problem{came.fixed === 1 ? '' : 's'} fixed
-            </Text>
-            {came.open > 0 && <Text color="error"> · {came.open} still open</Text>}
-          </Box>
-        </Box>
-      )
+        )
 
       return (
         <Box flexDirection="column">
           {header}
           <Box flexDirection="row" gap={1}>
             <Button key="back" label="← Tasks" hotkey="b" onPress={() => update($, view, held => ({ ...held, task: null }))} />
-            <Box flexGrow={1} flexShrink={1}>
-              <Text dimColor wrap="truncate-end">
-                task {index + 1} of {list.length} · {thread.label}
-              </Text>
-            </Box>
+            <Text dimColor>{`task ${opened.n} of ${entries.length}`}</Text>
+            <Box flexGrow={1} />
             {list.length > 1 && <Button key="prev" label="‹" hotkey="k" onPress={step(-1)} />}
             {list.length > 1 && <Button key="next" label="›" hotkey="j" onPress={step(1)} />}
           </Box>
-          <Box flexDirection="row" marginTop={1}>
-            <Box width={2} flexShrink={0}>
-              {mark(task)}
-            </Box>
+          <Box flexDirection="column" marginTop={1}>
             <Text bold wrap="wrap">
               {task.subject}
             </Text>
+            <Box flexDirection="row" gap={1}>
+              {mark(task)}
+              <Text dimColor wrap="truncate-end">
+                {status}
+              </Text>
+            </Box>
+            <Box flexDirection="row" gap={3} marginTop={1}>
+              {meta.map(([label, value]) => (
+                <Box flexDirection="column" flexShrink={0}>
+                  <Text dimColor>{label}</Text>
+                  <Text>{value}</Text>
+                </Box>
+              ))}
+            </Box>
           </Box>
-          <Text dimColor wrap="truncate-end">
-            {status} · {calls.length} call{calls.length === 1 ? '' : 's'}
-          </Text>
           <Box flexDirection="row" gap={1} marginY={1}>
             {tab('details', 'Details', 'd')}
-            {tab('problems', open > 0 ? `Problems ${open}` : found.length > 0 ? `Problems ${found.length}` : 'Problems', 'p')}
+            {tab('problems', found.length > 0 ? `Problems ${found.length}` : 'Problems', 'p')}
             {tab('result', 'Result', 'r')}
           </Box>
           {shown.tab === 'problems' ? trouble : shown.tab === 'result' ? result : details}
+          <Box marginTop={1}>
+            <Text dimColor>b tasks  d p r details · problems · result  k j prev/next</Text>
+          </Box>
         </Box>
       )
     }
-    // The agents' lists share as many rows as the main list has to itself.
-    const listing = work.agents.filter(agent => agent.tasks.length > 0).length
-    const agentRows = Math.max(3, Math.floor(MAX_TASK_ROWS / Math.max(1, listing)))
-    const limits = work.limits
-      .filter(limit => limit.kind === 'five_hour' || limit.kind === 'seven_day')
-      .map(limit => `${limit.kind === 'five_hour' ? '5h' : '7d'} ${Math.round(limit.percent)}%`)
-      .join(' · ')
-    // Those still running first, the newest of each kind on top.
-    const agents = [...work.agents].reverse().sort(
-      (one, other) => Number(other.status === 'running') - Number(one.status === 'running'),
+    const filter = shown.filter ?? 'all'
+    const tally = counts(entries)
+    const listed = filtered(entries, filter)
+    const near = nearby(
+      listed.map(entry => entry.task),
+      MAX_TASK_ROWS,
     )
+    const percent = work.window > 0 && work.context > 0 ? Math.round((work.context / work.window) * 100) : null
+    const main = entries.find(entry => entry.thread.id === 'main' && entry.task.status === 'in_progress')
+    const MARKS = { running: ['◐', 'warning'], done: ['✓', 'success'], failed: ['✕', 'error'] } as const
+    // One row a thread: what it is at, and what it has spent.
+    const thread = (label: string, glyph: readonly [string, string | undefined], what: JSX.Element, used: number) => (
+      <Box flexDirection="row" gap={1}>
+        <Box width={THREAD_NAME} flexShrink={0}>
+          <Text wrap="truncate-end">{label}</Text>
+        </Box>
+        <Text color={glyph[1]} dimColor={glyph[1] === undefined}>
+          {glyph[0]}
+        </Text>
+        <Box flexGrow={1} flexShrink={1}>
+          {what}
+        </Box>
+        {used > 0 && (
+          <Box flexShrink={0}>
+            <Text dimColor>{compact(used)}</Text>
+          </Box>
+        )}
+      </Box>
+    )
+    const mainMark: readonly [string, string | undefined] =
+      main !== undefined
+        ? MARKS.running
+        : work.tasks.length > 0 && work.tasks.every(task => task.status === 'completed')
+          ? MARKS.done
+          : ['○', undefined]
+    const FILTERS = [
+      ['all', 'All'],
+      ['open', 'Open'],
+      ['problems', 'Problems'],
+      ['done', 'Done'],
+    ] as const
+    const after = FILTERS[(FILTERS.findIndex(([name]) => name === filter) + 1) % FILTERS.length]?.[0]
+    // Each row opens its task; the first nine answer to their number too, which the row then shows.
+    const row = (entry: (typeof entries)[number]) => {
+      const { task, n } = entry
+      const isRunning = task.status === 'in_progress'
+      const open = problems(task).filter(problem => !problem.isFixed).length
+      const files = outcome(task).files.length
+      // A failed check keeps its mark, the one a row needs to tell it from one that passed.
+      const checked = checks(task).replace(/^[✓•] /, '')
+      const line = isRunning ? task.active || task.subject : task.subject
+      const when =
+        task.status === 'pending'
+          ? 'queued'
+          : task.startedAt === undefined
+            ? isRunning
+              ? '▸'
+              : ''
+            : `${clocked((task.endedAt ?? now) - task.startedAt)}${isRunning ? ' ▸' : ''}`
+
+      return (
+        <Box flexDirection="row" marginBottom={1}>
+          <Box width={2} flexShrink={0}>
+            {mark(task)}
+          </Box>
+          <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+            <Box flexDirection="row">
+              <Box flexGrow={1} flexShrink={1}>
+                <Button
+                  key={`task-${entry.thread.id}-${task.id}`}
+                  plain
+                  hotkey={n <= 9 ? String(n) : undefined}
+                  onPress={opener(entry.thread.id, task)}
+                >
+                  {/* A Button draws its children as they are, so the title is cut to the row here. */}
+                  <Text bold={isRunning} dimColor={task.status === 'pending'}>
+                    {fit(n <= 9 ? line : `${n}. ${line}`, room - (n <= 9 ? 3 : 0) - (when === '' ? 0 : when.length + 1) - 5)}
+                  </Text>
+                </Button>
+              </Box>
+              {when !== '' && (
+                <Box marginLeft={1} flexShrink={0}>
+                  <Text dimColor>{when}</Text>
+                </Box>
+              )}
+            </Box>
+            <Box flexDirection="row" gap={2}>
+              {isRunning && moving()}
+              <Text dimColor wrap="truncate-end">
+                {entry.thread.label}
+              </Text>
+              {open > 0 && (
+                <Text color="error">
+                  ! {open} problem{open === 1 ? '' : 's'}
+                </Text>
+              )}
+              {task.status === 'completed' && (
+                <Text dimColor wrap="truncate-end">
+                  {[`${files} file${files === 1 ? '' : 's'}`, checked].filter(part => part !== '').join(' · ')}
+                </Text>
+              )}
+            </Box>
+          </Box>
+          <Box marginLeft={1} flexShrink={0}>
+            <Text dimColor>›</Text>
+          </Box>
+        </Box>
+      )
+    }
 
     return (
       <Box flexDirection="column">
         {header}
-        <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
-          <Text color="claude" bold>
-            ◆ {work.goal === null ? 'Working on' : 'Goal'}
+        <Box flexDirection="column" marginBottom={1}>
+          <Text dimColor>GOAL</Text>
+          <Text bold wrap="wrap">
+            {work.goal ?? (work.ask || 'Nothing yet. Your next prompt shows here.')}
           </Text>
-          <Text wrap="wrap">{work.goal ?? (work.ask || 'Nothing yet. Your next prompt shows here.')}</Text>
-          {work.tasks.length > 0 && <Box marginTop={1}>{steps(work.tasks)}</Box>}
-          {todos('main', work.tasks, MAX_TASK_ROWS)}
-          {work.tasks.length > 0 && <Text dimColor>Press a task, or its number, for its calls, problems and result.</Text>}
-          {work.tasks.length === 0 && (
-            <Text dimColor wrap="wrap">
-              No task list yet. Claude keeps one for work with several steps, and each task shows here.
-            </Text>
+          {entries.length > 0 && (
+            <Box flexDirection="row" gap={1}>
+              {meter(done / entries.length, Math.max(10, Math.min(OVERALL_BAR, room - 6)), 'success')}
+              <Text dimColor>{Math.round((done / entries.length) * 100)}%</Text>
+            </Box>
+          )}
+          {(work.tasks.length > 0 || percent !== null || work.agents.length > 0) && (
+            <Box flexDirection="column" marginTop={1}>
+              {thread(
+                'main',
+                mainMark,
+                <Box flexDirection="row">
+                  <Text dimColor wrap="truncate-end">
+                    {[main === undefined ? '' : `task ${main.n}`, percent === null ? '' : 'ctx ']
+                      .filter(part => part !== '')
+                      .join(' · ')}
+                  </Text>
+                  {percent !== null && meter(percent / 100, 10, 'permission')}
+                  {percent !== null && <Text dimColor>{` ${percent}%`}</Text>}
+                </Box>,
+                work.used,
+              )}
+              {[...work.agents].reverse().map(agent => {
+                const at = entries.find(entry => entry.thread.id === agent.id && entry.task.status === 'in_progress')
+                const what =
+                  agent.status !== 'running' && agent.said
+                    ? agent.said
+                    : at !== undefined
+                      ? `task ${at.n}`
+                      : agent.status === 'running'
+                        ? agent.last
+                        : ''
+
+                const clock = clocked((agent.endedAt ?? now) - agent.startedAt)
+                // The name, the mark, the gaps and the spend take the rest of the row; what it said is cut to fit.
+                const width = room - THREAD_NAME - 3 - (agent.used > 0 ? compact(agent.used).length + 1 : 0) - clock.length - 3
+
+                return thread(
+                  agent.label || agent.type || 'agent',
+                  MARKS[agent.status],
+                  <Text dimColor wrap="truncate-end">
+                    {[fit(what, width), clock].filter(part => part !== '').join(' · ')}
+                  </Text>,
+                  agent.used,
+                )
+              })}
+            </Box>
           )}
         </Box>
-        <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-          <Text bold>Main thread</Text>
-          {context(work.context, true)}
-          {work.agents.length > 0 && use(work.used)}
-          {limits !== '' && stat('limits', null, 'success', limits)}
-          {work.context <= 0 && limits === '' && <Text dimColor>Figures arrive with the next model request.</Text>}
-        </Box>
-        {agents.length === 0 && (
-          <Box paddingX={1} marginTop={1}>
-            <Text dimColor wrap="wrap">
-              No subagents yet. Each one Claude starts gets a card here, with its context and its share of
-              the session's use.
-            </Text>
+        {entries.length > 0 && (
+          <Box flexDirection="row" gap={1} marginBottom={1}>
+            {FILTERS.map(([name, label]) => (
+              <Button
+                key={`filter-${name}`}
+                label={`${label} ${tally[name]}`}
+                hotkey={name === after ? 'f' : undefined}
+                variant={name === filter ? 'primary' : 'secondary'}
+                onPress={() => update($, view, held => ({ ...held, filter: name }))}
+              >
+                <Text>{label} </Text>
+                <Text color={name === 'problems' && tally[name] > 0 ? 'error' : undefined} dimColor={!(name === 'problems' && tally[name] > 0)}>
+                  {String(tally[name])}
+                </Text>
+              </Button>
+            ))}
           </Box>
         )}
-        {agents.map(agent => {
-          const isRunning = agent.status === 'running'
-          const color = isRunning ? 'claude' : agent.status === 'failed' ? 'error' : 'success'
-          const began = agent.startedAt ?? now
-          const took = elapsed((agent.endedAt ?? now) - began)
-
-          return (
-            <Box flexDirection="column" borderStyle="round" borderColor={color} borderDimColor={!isRunning} paddingX={1}>
-              <Box flexDirection="row">
-                <Box width={2} flexShrink={0}>
-                  <Text color={color}>{isRunning ? spinner(at) : agent.status === 'failed' ? '✖' : '✔'}</Text>
-                </Box>
-                <Box flexGrow={1} flexShrink={1}>
-                  <Text bold wrap="truncate-end">
-                    {agent.label || 'agent'}
-                  </Text>
-                </Box>
-                <Box marginLeft={1} flexShrink={0}>
-                  <Text color={color} dimColor={!isRunning}>
-                    {isRunning ? `running ${took}` : `${agent.status} in ${took}`}
-                  </Text>
-                </Box>
-              </Box>
-              <Text dimColor wrap="truncate-end">
-                {[
-                  agent.type,
-                  `${agent.tools} tool${agent.tools === 1 ? '' : 's'}`,
-                  isRunning && agent.last !== '' ? `now: ${agent.last}` : '',
-                ]
-                  .filter(part => part !== '')
-                  .join(' · ')}
-              </Text>
-              {context(agent.context, false)}
-              {use(agent.used)}
-              {steps(agent.tasks)}
-              {todos(agent.id, agent.tasks, agentRows)}
-            </Box>
-          )
-        })}
+        {near.before > 0 && <Text dimColor>{`  … ${near.before} done before`}</Text>}
+        {listed.slice(near.before, near.before + near.shown.length).map(row)}
+        {near.after > 0 && <Text dimColor>{`  … ${near.after} more to do`}</Text>}
+        {entries.length > 0 && listed.length === 0 && <Text dimColor>No tasks here.</Text>}
+        {entries.length === 0 && (
+          <Text dimColor wrap="wrap">
+            No task list yet. Claude keeps one for work with several steps, and each task shows here.
+          </Text>
+        )}
+        {entries.length > 0 && (
+          <Box marginTop={1}>
+            <Text dimColor>1–9 open  f filter  esc back to chat</Text>
+          </Box>
+        )}
       </Box>
     )
   })
