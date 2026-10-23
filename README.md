@@ -6,11 +6,7 @@ A mod for [Claude Code](https://claude.com/claude-code) that keeps watch over th
 - **A progress band** above the prompt with the same figures in one line per thread.
 - **A highlighter pen**, optional. The phrases that matter in a reply are drawn with a bright background, the way you would mark a page with a pen. A second, small model reads each reply and marks it for you, and tells you what the reply left out. You can add your own marks too, or turn it off in `/config`.
 
-
-
-https://github.com/user-attachments/assets/581f0d80-416e-4a66-b015-b44cb503d4dc
-
-
+https://github.com/user-attachments/assets/2c95f906-ba16-4539-861a-c3367b0cb81b
 
 ## Install
 
