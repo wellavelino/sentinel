@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { AgentStatus, On } from 'claude-code'
 
 const SURFACES = ['terminal', 'desktop'] as const
 
@@ -33,6 +33,8 @@ const typed = (command: string, args: string) =>
     presentation: { isFullscreen: true, columns: 160 },
   }) as const
 
+type Agent = { status: AgentStatus; teammateId?: string }
+
 type Said = { logs: string[]; opened: string[]; asks: { model?: string; prompt: string }[]; calls: string[]; tools: string[]; registered: { name: string; isDeferred?: boolean }[] }
 
 /** The engine beneath the mod: turns, model requests that report `usage`, agents, and a model to ask. */
@@ -40,12 +42,28 @@ function world(
   on: On,
   reply = '{"highlights": [], "missed": ""}',
   surfaces: readonly ('terminal' | 'desktop')[] = ['terminal'],
-): Said & { clock: ReturnType<typeof mock.clock> } {
+): Said & { clock: ReturnType<typeof mock.clock>; launch: (agentId: string, agent?: Partial<Agent>) => void; loseList: () => void } {
   const said: Said = { logs: [], opened: [], asks: [], calls: [], tools: [], registered: [] }
   const clock = mock.clock(on, { now: 1000 })
+  // The agents the engine runs: each from the first time it is heard of until its run ends.
+  const agents = new Map<string, Agent>()
+  let isListLost = false
+  const heard = (agentId: string | undefined) => {
+    if (agentId !== undefined && !agents.has(agentId)) {
+      agents.set(agentId, { status: 'running' })
+    }
+  }
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
-  on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('turn.complete', ($, e) => {
+    if (e.agentId !== undefined) {
+      agents.set(e.agentId, { ...agents.get(e.agentId), status: 'completed' })
+    }
+
+    return { text: e.answer }
+  })
   on('turn.step', async function* ($, e) {
+    heard(e.agentId)
+
     return {
       turnId: e.turnId,
       index: e.index,
@@ -57,6 +75,7 @@ function world(
   })
   on('tool.call', ($, e) => {
     said.calls.push(String(e.tool))
+    heard(e.agentId)
 
     if (e.tool === 'TaskList') {
       return {
@@ -90,9 +109,13 @@ function world(
     return { value: { tool: `mcp__sentinel__${e.name}` } }
   })
   on('session.surfaces', () => ({ value: surfaces }))
-  on('agent.list', () => ({
-    value: [{ id: 'agent-1', description: 'Review the parser', type: 'general-purpose', status: 'running' }],
-  }))
+  on('agent.list', () => {
+    if (isListLost) {
+      throw new Error('no agent list')
+    }
+
+    return { value: [...agents].map(([id, agent]) => ({ id, description: 'Review the parser', type: 'general-purpose', ...agent })) }
+  })
   on('model.complete', ($, e) => {
     said.asks.push({ model: e.model, prompt: e.prompt })
 
@@ -125,7 +148,16 @@ function world(
     return <Text>engine drew: {e.props.text}</Text>
   })
 
-  return { ...said, clock }
+  // An agent the engine started that has not reached the mod yet: no step, no tool call.
+  const launch = (agentId: string, agent: Partial<Agent> = {}) => {
+    agents.set(agentId, { status: 'running', ...agent })
+  }
+  // The engine cannot list its agents from here on.
+  const loseList = () => {
+    isListLost = true
+  }
+
+  return { ...said, clock, launch, loseList }
 }
 
 // A subagent's tool call, as the engine raises it inside the agent's loop.
@@ -191,6 +223,20 @@ describe('the progress band', () => {
 
     expect(texts).toContain('Fix the flaky login test')
     expect(texts.some(text => /1\/2/.test(text))).toBe(true)
+    await ui.unmount()
+  })
+
+  test("keeps the person's prompt as the work when a subagent's run starts", async ($, on) => {
+    world(on)
+    await $.turn.start({ text: 'Fix the flaky login test', turnId: 'turn-1' })
+    await $.turn.start({ text: 'In this repo, list what the tests do not cover', turnId: 'turn-2', agentId: 'agent-1' })
+    await $.tool.call({ tool: 'TaskCreate', subject: 'Reproduce', description: 'x' })
+
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
+
+    expect(texts).toContain('Fix the flaky login test')
+    expect(texts.some(text => /tests do not cover/.test(text))).toBe(false)
     await ui.unmount()
   })
 
@@ -714,6 +760,7 @@ describe('the second reader', () => {
     await $.turn.start({ text: 'Apply the migration', turnId: 'turn-1' })
     await $.tool.call({ tool: 'Bash', command: 'make migrate' })
     await $.tool.call(AGENT_CALL)
+    await $.turn.complete({ ...done, agentId: 'agent-1' })
     // An agent reports back: the engine starts a turn of its own for the delivery.
     await $.turn.start({ text: '<agent-message from="agent-1">done</agent-message>', turnId: 'turn-2' })
     await $.turn.complete({ ...done, turnId: 'turn-2' })
@@ -731,6 +778,42 @@ describe('the second reader', () => {
     expect(said.asks[0]?.model).toBeUndefined()
     expect(said.asks[0]?.prompt).toMatch(/second reader[\s\S]*<reply>\nThe migration is applied/)
     expect(said.logs).toEqual([])
+  })
+
+  test('waits for the reply that comes once the subagents still running are done', async ($, on) => {
+    const said = world(on)
+    await $.turn.start({ text: 'Apply the migration', turnId: 'turn-1' })
+    said.launch('agent-1')
+    // The turn ends while the agent works in the background: its reply is a plan, not the result.
+    await $.turn.complete(done)
+    await said.clock.advance(1000)
+    expect(said.asks).toEqual([])
+
+    await $.turn.complete({ ...done, agentId: 'agent-1' })
+    await $.turn.start({ text: '<agent-message from="agent-1">done</agent-message>', turnId: 'turn-2' })
+    await $.turn.complete({ ...done, turnId: 'turn-2' })
+    await said.clock.advance(1000)
+    expect(said.asks.length).toBe(1)
+  })
+
+  test('reads the reply while the only agents left are teammates, which may never report back', async ($, on) => {
+    const said = world(on)
+    await $.turn.start({ text: 'Apply the migration', turnId: 'turn-1' })
+    // One waits for a message; one in a terminal pane of its own still reads `running` after its pane died.
+    said.launch('scout@team', { status: 'idle', teammateId: 'scout@team' })
+    said.launch('pane@team', { teammateId: 'pane@team' })
+    await $.turn.complete(done)
+    await said.clock.advance(1000)
+    expect(said.asks.length).toBe(1)
+  })
+
+  test('reads the reply when the engine cannot list its agents', async ($, on) => {
+    const said = world(on)
+    await $.turn.start({ text: 'Apply the migration', turnId: 'turn-1' })
+    said.loseList()
+    await $.turn.complete(done)
+    await said.clock.advance(1000)
+    expect(said.asks.length).toBe(1)
   })
 
   test('leaves short replies, subagents’ replies and aborted turns unread', { options: { readerModel: 'sonnet' } }, async ($, on) => {

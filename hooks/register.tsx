@@ -205,6 +205,23 @@ async function settle($: EngineInterface): Promise<void> {
 }
 
 /**
+ * Whether a subagent of this session still works and will report back in a later turn. A teammate
+ * is left out: one idle waits for a message, and one in a pane of its own may never report again.
+ */
+async function isAwaitingAgents($: EngineInterface): Promise<boolean> {
+  try {
+    return (await $.agent.list()).some(
+      agent =>
+        agent.teammateId === undefined &&
+        (agent.status === 'pending' || agent.status === 'running' || agent.status === 'waiting'),
+    )
+  } catch {
+    // Without the engine's list the reply is read, as it was before the mod asked.
+    return false
+  }
+}
+
+/**
  * Asks a second reader what in the turn's reply must not be missed, highlights those phrases,
  * and says what the reply left out. `session` asks a fork of the session itself, which has the
  * whole transcript before it; any other mode asks `model`, which sees the reply and a digest.
@@ -454,7 +471,13 @@ export const register: Register = (on, options) => {
         const now = await $.clock.now()
 
         await update($, board, held => ended(held, agentId, e.reason === 'answer' ? 'done' : 'failed', now))
-      } else if (hasReader && e.reason === 'answer' && e.answer.length >= MIN_REVIEWED_REPLY) {
+      } else if (
+        hasReader &&
+        e.reason === 'answer' &&
+        e.answer.length >= MIN_REVIEWED_REPLY &&
+        // While subagents still work, the reply is a plan: the result comes in a later turn.
+        !(await isAwaitingAgents($))
+      ) {
         const answer = e.answer
         const said = digestText(digest)
 
@@ -473,6 +496,11 @@ export const register: Register = (on, options) => {
   // The progress band ---------------------------------------------------------------------
 
   on('turn.start', async ($, e, next) => {
+    // A subagent's run begins with the Agent call's prompt, not the person's.
+    if (e.agentId !== undefined) {
+      return next(e)
+    }
+
     // A turn the engine starts (an agent reporting back) carries on the same piece of work.
     if (isAsk(e.text)) {
       digest = NO_CALLS
