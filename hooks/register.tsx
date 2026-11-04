@@ -65,6 +65,10 @@ const RUNNING_BAR = 12
 // The whole list's bar, and the columns a thread's name takes.
 const OVERALL_BAR = 40
 const THREAD_NAME = 12
+// The context meter's blue: no theme color is a plain blue (`permission` is a pale lavender).
+const CTX_BLUE = '#5b8def'
+// The running row's band, a shade above the panel so the eye finds it first.
+const RUN_BG = '#1f2a3d'
 // The task rows one drawing holds: a longer list shows the stretch around the task in progress.
 const MAX_TASK_ROWS = 30
 // The calls a task's details draw at once, the latest kept.
@@ -613,7 +617,7 @@ export const register: Register = (on, options) => {
         return (
           <Text>
             <Text color={color}>{drawn.full}</Text>
-            <Text dimColor>{'█'.repeat(drawn.rest.length)}</Text>
+            <Text color="subtle">{'█'.repeat(drawn.rest.length)}</Text>
           </Text>
         )
       }
@@ -671,7 +675,7 @@ export const register: Register = (on, options) => {
             {percent !== null && (
               <Box flexShrink={0}>
                 <Text dimColor>ctx </Text>
-                {meter(percent / 100, 10, 'permission')}
+                {meter(percent / 100, 10, CTX_BLUE)}
                 <Text dimColor> {percent}%</Text>
               </Box>
             )}
@@ -820,14 +824,14 @@ export const register: Register = (on, options) => {
       pending = { timer, at: now }
     }
 
-    // A bar as the band draws it: the part done in a color, the rest in dim blocks.
+    // A bar as the band draws it: the part done in a color, the rest a dark track.
     const meter = (fraction: number, width: number, color: string) => {
       const drawn = bar(fraction, width)
 
       return (
         <Text>
           <Text color={color}>{drawn.full}</Text>
-          <Text dimColor>{'█'.repeat(drawn.rest.length)}</Text>
+          <Text color="subtle">{'█'.repeat(drawn.rest.length)}</Text>
         </Text>
       )
     }
@@ -837,11 +841,9 @@ export const register: Register = (on, options) => {
 
       return (
         <Box flexDirection="row" flexShrink={0}>
-          <Text dimColor>
-            {drawn.before.replace(/./g, '█')}
-          </Text>
+          <Text color="subtle">{drawn.before.replace(/./g, '█')}</Text>
           <Text color="warning">{drawn.lit.replace(/./g, '█')}</Text>
-          <Text dimColor>{drawn.after.replace(/./g, '█')}</Text>
+          <Text color="subtle">{drawn.after.replace(/./g, '█')}</Text>
         </Box>
       )
     }
@@ -1128,7 +1130,7 @@ export const register: Register = (on, options) => {
             : `${clocked((task.endedAt ?? now) - task.startedAt)}${isRunning ? ' ▸' : ''}`
 
       return (
-        <Box flexDirection="row" marginBottom={1}>
+        <Box flexDirection="row" marginBottom={1} backgroundColor={isRunning ? RUN_BG : undefined}>
           <Box width={2} flexShrink={0}>
             {mark(task)}
           </Box>
@@ -1149,7 +1151,7 @@ export const register: Register = (on, options) => {
               </Box>
               {when !== '' && (
                 <Box marginLeft={1} flexShrink={0}>
-                  <Text dimColor>{when}</Text>
+                  <Text dimColor={task.status === 'pending'}>{when}</Text>
                 </Box>
               )}
             </Box>
@@ -1171,7 +1173,7 @@ export const register: Register = (on, options) => {
             </Box>
           </Box>
           <Box marginLeft={1} flexShrink={0}>
-            <Text dimColor>›</Text>
+            <Text>›</Text>
           </Box>
         </Box>
       )
@@ -1202,7 +1204,7 @@ export const register: Register = (on, options) => {
                       .filter(part => part !== '')
                       .join(' · ')}
                   </Text>
-                  {percent !== null && meter(percent / 100, 10, 'permission')}
+                  {percent !== null && meter(percent / 100, 10, CTX_BLUE)}
                   {percent !== null && <Text dimColor>{` ${percent}%`}</Text>}
                 </Box>,
                 work.used,
@@ -1245,7 +1247,7 @@ export const register: Register = (on, options) => {
                 onPress={() => update($, view, held => ({ ...held, filter: name }))}
               >
                 <Text>{label} </Text>
-                <Text color={name === 'problems' && tally[name] > 0 ? 'error' : undefined} dimColor={!(name === 'problems' && tally[name] > 0)}>
+                <Text color={name === 'problems' && tally[name] > 0 ? 'error' : undefined} bold={name === filter}>
                   {String(tally[name])}
                 </Text>
               </Button>
@@ -1263,7 +1265,12 @@ export const register: Register = (on, options) => {
         )}
         {entries.length > 0 && (
           <Box marginTop={1}>
-            <Text dimColor>1–9 open  f filter  esc back to chat</Text>
+            <Text bold>1–9</Text>
+            <Text dimColor> open  </Text>
+            <Text bold>f</Text>
+            <Text dimColor> filter  </Text>
+            <Text bold>esc</Text>
+            <Text dimColor> back to chat</Text>
           </Box>
         )}
       </Box>
