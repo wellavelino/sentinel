@@ -67,8 +67,6 @@ const OVERALL_BAR = 40
 const THREAD_NAME = 12
 // The context meter's blue: no theme color is a plain blue (`permission` is a pale lavender).
 const CTX_BLUE = '#5b8def'
-// The running row's band, a shade above the panel so the eye finds it first.
-const RUN_BG = '#1f2a3d'
 // The task rows one drawing holds: a longer list shows the stretch around the task in progress.
 const MAX_TASK_ROWS = 30
 // The calls a task's details draw at once, the latest kept.
@@ -1130,7 +1128,7 @@ export const register: Register = (on, options) => {
             : `${clocked((task.endedAt ?? now) - task.startedAt)}${isRunning ? ' ▸' : ''}`
 
       return (
-        <Box flexDirection="row" marginBottom={1} backgroundColor={isRunning ? RUN_BG : undefined}>
+        <Box flexDirection="row" marginBottom={1} backgroundColor={isRunning ? 'subtle' : undefined}>
           <Box width={2} flexShrink={0}>
             {mark(task)}
           </Box>
