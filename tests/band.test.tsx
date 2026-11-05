@@ -384,7 +384,7 @@ describe('the agents panel', () => {
       expect(await texts()).toContain('queued')
       expect((await ui.find({ key: 'filter-all' }))?.props.label).toBe('All 3')
       expect((await ui.find({ key: 'filter-done' }))?.props.label).toBe('Done 1')
-      expect(await texts()).toContain('1–9 open  f filter  esc back to chat')
+      expect(await texts()).toEqual(expect.arrayContaining(['1–9', ' open  ', 'f', ' filter  ', 'esc', ' back to chat']))
       // The cards, the limits and the share of use are gone.
       expect((await texts()).some(text => /Main thread|5h|of session|running 1m/.test(text))).toBe(false)
       await ui.unmount()
